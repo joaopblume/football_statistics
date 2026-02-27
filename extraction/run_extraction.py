@@ -13,7 +13,7 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, project_root)
 
 from database.connection import SessionLocal
-from extraction.api_client import ApiFootballClient
+from extraction.api_client import ApiFootballClient, DailyRequestLimitReachedError
 from extraction.mappers import (
     map_league,
     map_player,
@@ -193,6 +193,10 @@ def run_extraction(league_id: int, season: int) -> int:
     except SQLAlchemyError as exc:
         session.rollback()
         _fail(f"Erro de banco de dados: {exc}")
+        return 1
+    except DailyRequestLimitReachedError as exc:
+        session.rollback()
+        _fail(f"Limite diario da API atingido. Execucao interrompida: {exc}")
         return 1
     except KeyboardInterrupt:
         session.rollback()

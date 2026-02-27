@@ -6,6 +6,10 @@ import requests
 from dotenv import load_dotenv
 
 
+class DailyRequestLimitReachedError(RuntimeError):
+    """Raised when the API daily request quota is exhausted."""
+
+
 class ApiFootballClient:
     def __init__(
         self,
@@ -49,6 +53,9 @@ class ApiFootballClient:
 
                 data = resp.json()
                 errors = data.get("errors") or {}
+                if errors.get("requests"):
+                    raise DailyRequestLimitReachedError(errors.get("requests"))
+
                 if errors.get("rateLimit"):
                     wait_seconds = self.rate_limit_retry_seconds
                     attempt += 1
