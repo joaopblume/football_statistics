@@ -89,7 +89,7 @@ def run_extraction(league_id: int, season: int) -> int:
         if not _check_database_ready(session):
             return 1
 
-        client = ApiFootballClient(per_page_delay_seconds=1.0)
+        client = ApiFootballClient(per_page_delay_seconds=10.0, rate_limit_retry_seconds=10)
 
         # 1) League + season
         league_data = client.get_league(league_id=league_id, season=season)
@@ -156,8 +156,8 @@ def run_extraction(league_id: int, season: int) -> int:
             players = client.get_all_players_by_team(team_id=team_id, season=season)
             if not players:
                 print(f"[AVISO] Nenhum jogador retornado para time_id={team_id}.")
-                print("[INFO] Aguardando 7s antes do proximo time.")
-                time.sleep(7)
+                print("[INFO] Aguardando 10s antes do proximo time.")
+                time.sleep(10)
                 continue
 
             for row in players:
@@ -179,8 +179,8 @@ def run_extraction(league_id: int, season: int) -> int:
                         )
                     )
 
-            print("[INFO] Aguardando 7s antes do proximo time.")
-            time.sleep(7)
+            print("[INFO] Aguardando 10s antes do proximo time.")
+            time.sleep(10)
 
         player_count = upsert_many(session, "player", players_to_upsert)
         stats_count = upsert_many(session, "player_statistics", stats_to_upsert)
