@@ -12,6 +12,7 @@ class ApiFootballClient:
         api_key: Optional[str] = None,
         base_url: str = "https://v3.football.api-sports.io",
         per_page_delay_seconds: float = 1.0,
+        max_players_page: int = 3,
     ):
         load_dotenv()
         self.api_key = api_key or os.getenv("API_FOOTBALL_KEY")
@@ -23,6 +24,7 @@ class ApiFootballClient:
         self.base_url = base_url.rstrip("/")
         self.headers = {"x-apisports-key": self.api_key}
         self.per_page_delay_seconds = per_page_delay_seconds
+        self.max_players_page = max_players_page
 
     def request(self, endpoint: str, params: Dict[str, Any], retries: int = 2) -> Dict[str, Any]:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -65,7 +67,19 @@ class ApiFootballClient:
         page = 1
 
         while True:
+            if page > self.max_players_page:
+                print(
+                    f"[AVISO] Limite de pagina configurado atingido para players: "
+                    f"team_id={team_id} max_page={self.max_players_page}."
+                )
+                break
+
             data = self.get_players_by_team(team_id=team_id, season=season, page=page)
+            errors = data.get("errors") or {}
+            if errors.get("plan"):
+                print(f"[AVISO] Restricao do plano ao consultar players: {errors.get('plan')}")
+                break
+
             response = data.get("response") or []
             players.extend(response)
 
