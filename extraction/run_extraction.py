@@ -210,13 +210,57 @@ def run_extraction(league_id: int, season: int) -> int:
         session.close()
 
 
+def run_extraction_range(league_id: int, season_start: int, season_end: int) -> int:
+    if season_start > season_end:
+        _fail(
+            f"Intervalo de temporada invalido: season_start={season_start} "
+            f"maior que season_end={season_end}."
+        )
+        return 1
+
+    final_code = 0
+    for season in range(season_start, season_end + 1):
+        print(f"[INFO] ---- Executando temporada {season} ----")
+        code = run_extraction(league_id=league_id, season=season)
+        if code != 0:
+            final_code = code
+            print(f"[AVISO] Extracao da temporada {season} finalizou com erro.")
+        else:
+            _ok(f"Temporada {season} concluida com sucesso.")
+    return final_code
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extrai dados da API-Football e persiste no PostgreSQL")
     parser.add_argument("--league-id", type=int, default=71, help="ID da liga na API-Football")
-    parser.add_argument("--season", type=int, required=True, help="Temporada a ser extraida")
-    return parser.parse_args()
+    parser.add_argument("--season", type=int, help="Temporada unica a ser extraida")
+    parser.add_argument("--season-start", type=int, help="Inicio do intervalo de temporadas")
+    parser.add_argument("--season-end", type=int, help="Fim do intervalo de temporadas")
+    args = parser.parse_args()
+
+    using_single = args.season is not None
+    using_range = args.season_start is not None or args.season_end is not None
+
+    if using_single and using_range:
+        parser.error("Use --season ou --season-start/--season-end, nao ambos.")
+
+    if using_single:
+        return args
+
+    if args.season_start is None or args.season_end is None:
+        parser.error("Informe --season ou o par --season-start e --season-end.")
+
+    return args
 
 
 if __name__ == "__main__":
     args = parse_args()
-    raise SystemExit(run_extraction(league_id=args.league_id, season=args.season))
+    if args.season is not None:
+        raise SystemExit(run_extraction(league_id=args.league_id, season=args.season))
+    raise SystemExit(
+        run_extraction_range(
+            league_id=args.league_id,
+            season_start=args.season_start,
+            season_end=args.season_end,
+        )
+    )

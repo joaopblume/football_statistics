@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ## Execucao
 
-Rodar extracao da Serie A (id padrao = 71):
+Rodar extracao da Serie A (id padrao = 71) para uma temporada:
 
 ```bash
 python extraction/run_extraction.py --season 2023
@@ -76,12 +76,26 @@ Ou definir explicitamente a liga:
 python extraction/run_extraction.py --league-id 71 --season 2023
 ```
 
+Extrair um intervalo de temporadas (ex.: 2022 ate 2024):
+
+```bash
+python extraction/run_extraction.py --league-id 71 --season-start 2022 --season-end 2024
+```
+
+### Parametros de linha de comando
+
+- `--league-id`: define a liga na API-Football (ex.: Serie A = `71`).
+- `--season`: extrai um unico ano.
+- `--season-start` + `--season-end`: extrai um intervalo de anos (inclusive).
+- Regra de uso: informe `--season` **ou** o par `--season-start/--season-end`.
+
 ## Comportamentos Importantes
 
 - O script possui validacao de banco antes de chamar a API.
 - Em limite diario da API (`errors.requests`), a execucao e encerrada imediatamente.
 - Em rate limit por minuto, o cliente aguarda e tenta novamente.
 - Em plano free, o endpoint de players respeita limite de paginas suportado.
+- Se a API retornar `errors.plan` para temporadas fora do acesso do plano, use anos suportados (no seu caso atual: `2022` a `2024`).
 
 ## Roadmap
 
