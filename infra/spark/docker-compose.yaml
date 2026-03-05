@@ -11,10 +11,11 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin123
       
-      # Download Iceberg and S3A dependencies upon Spark initialization
-      # Note: This uses packages compatible with Spark 3.5.x, which is the default in the latest image
+      # Descobrimos que a versão do Hadoop base dessa imagem (jupyter/pyspark-notebook) não possui
+      # algumas classes da 3.3.6. A versão 3.3.4 (padrão do Spark 3.5 pre-built) deve funcionar.
       PYSPARK_SUBMIT_ARGS: >
-        --conf spark.jars.packages=org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,org.apache.hadoop:hadoop-aws:3.3.6,com.amazonaws:aws-java-sdk-bundle:1.12.262
+        --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
         pyspark-shell
     volumes:
       # Mount the notebooks directory to persist work
