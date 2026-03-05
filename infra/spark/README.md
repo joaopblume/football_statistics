@@ -1,40 +1,33 @@
-# Apache Spark
+# Jupyter PySpark (Motor de Processamento)
 
-This directory contains the Docker Compose configuration to spin up a standalone Apache Spark cluster for data processing.
+Este diretório contém a configuração otimizada do motor de processamento distribuído **Apache Spark**, embrulhado dentro de um ambiente Jupyter Notebook para facilitar a experimentação interativa.
 
-## Configuration
+## Propósito
 
-The `docker-compose.yaml` file defines a Spark cluster consisting of:
-* **Spark Master**: The cluster manager (UI available on port 8080).
-* **Spark Worker**: A single worker node to execute tasks (UI available on port 8081).
+Em vez de subir um cluster Spark completo (arquitetura Master/Worker que consome muita RAM mesmo ocioso), optamos por condensar o Spark em um único contêiner inteligente (`jupyter/pyspark-notebook`). 
 
-*Note: You can scale the number of workers by duplicating the worker block inside the docker-compose file and simply changing its name and port.*
+Neste projeto de Estatísticas de Futebol, o Spark é o "músculo" que processará os logs em lote do `datalake-raw`, limpará os dados estáticos e dinâmicos, e os injetará como tabelas validadas no MinIO gerenciadas via **Apache Iceberg**.
 
-## How to Run
+## Stack Integrado (Iceberg + S3A)
 
-1. Open your terminal and navigate to this directory.
-2. Run the following command to start the Spark cluster in the background:
+A beleza dessa configuração é que o Spark por padrão não sabe o que é Iceberg nem como falar com MinIO nativamente. Configuramos a ponte exata no arquivo `conf/spark-defaults.conf` e na variável de ambiente do `docker-compose.yaml`:
 
-```bash
-# Start the Spark cluster in detached mode
-docker compose up -d
-```
+* **Downgrade Estratégico do Hadoop-AWS:** Descobrimos que a imagem usa um `hadoop` core levemente desatualizado em relação às bibliotecas mais modernas do S3A (ex: erro `PrefetchingStatistics`). Por isso, forçamos o PySpark a baixar no boot a versão customizada via:
+  `--packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262`
+* **Catálogo Lake:** A pasta `conf/` define um catálogo chamado `lake` que mapeia todas as consultas `spark.sql()` diretamente para o bucket `s3a://datalake-warehouse/iceberg` sem precisar de um Metastore pesado como o Hive.
 
-3. To check the logs, you can use:
+## Comunicação e Redes
 
-```bash
-# View and follow logs from the Spark cluster containers
-docker compose logs -f
-```
+Este contêiner não possui configurações complexas de rede internamente. Em vez disso, informamos o Docker Compose para anexá-lo à rede externa `datalake-network` (criada ao subir o MinIO). 
 
-4. To stop the cluster, run:
+Isso garante que ao digitar algo como `.endpoint=http://minio:9000` nas opções do Spark, o DNS interno do Docker resolva perfeitamente o nome "minio" para o contêiner de storage de destino, sem precisar expor a porta local para a internet.
 
-```bash
-# Stop the Spark cluster and remove the containers
-docker compose down
-```
+## Como Usar
 
-## Accessing the UI
+Suba junto da stack completa via Makefile (`make infra-up` na raiz) ou execute no diretório:
+`docker compose up -d`
 
-* **Spark Master UI**: [http://localhost:8080](http://localhost:8080)
-* **Spark Worker UI**: [http://localhost:8081](http://localhost:8081)
+* **Jupyter UI:** [http://localhost:8888](http://localhost:8888) (Token gerado via logs: `docker compose logs -f`)
+* **Spark UI:** [http://localhost:4040](http://localhost:4040) (Ativa apenas enquanto uma sessão Spark estiver atrelada a uma célula do notebook ligada).
+
+> **Aviso:** Seus notebooks são sincronizados automaticamente e não se perdem ao matar o contêiner devido ao mapeamento volumétrico para a pasta local `./notebooks`.
