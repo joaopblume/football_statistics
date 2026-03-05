@@ -1,51 +1,83 @@
-# Futebol Estatisticas
+# Futebol Estatísticas
 
-Projeto para construir uma base confiavel de dados de futebol com extracao automatizada, persistencia em PostgreSQL e evolucao para analises estatisticas e modelos de Machine Learning.
+Pipeline de dados de futebol com extração automatizada, armazenamento em camadas (medallion architecture) e persistência em PostgreSQL — orquestrado por **Apache Airflow**.
 
 ## Objetivo
 
-1. Extrair dados de futebol de forma automatizada (API e, futuramente, scraping controlado).
-2. Sincronizar os dados em um banco PostgreSQL como fonte unica e confiavel.
-3. Realizar analises estatisticas a partir dos dados coletados.
-4. Testar treinamento de modelos de ML com PyTorch.
+1. Extrair dados de futebol de forma automatizada (soccerdata / ESPN).
+2. Processar e normalizar os dados com Apache Spark (Bronze → Silver).
+3. Persistir dados curados em PostgreSQL como fonte confiável.
+4. Realizar análises estatísticas a partir dos dados curados.
+5. Treinar modelos de Machine Learning com PyTorch (futuro).
 
-## Stack Atual
+## Stack
 
-- Python 3.11+
-- PostgreSQL
-- SQLAlchemy
-- Requests
-- python-dotenv
+| Camada | Tecnologia |
+|---|---|
+| Orquestração | Apache Airflow (VPS) |
+| Processamento | Apache Spark (Docker / VPS) |
+| Banco de dados | PostgreSQL |
+| Extração | soccerdata (ESPN provider) |
+| Linguagem | Python 3.11+ |
+| Libs auxiliares | Pandas, Pendulum, python-dotenv |
 
-## Arquitetura Atual
+## Arquitetura
 
-- `database/`
-  - `base.py`: declarative base do SQLAlchemy.
-  - `connection.py`: engine e `SessionLocal`.
-  - `models/`: entidades separadas por tabela (`League`, `Season`, `Team`, `Venue`, `Player`, `PlayerStatistics`).
-- `extraction/`
-  - `api_client.py`: cliente da API-Football, com controle de rate limit e limites de plano.
-  - `mappers.py`: normalizacao/mapeamento do payload da API para o schema relacional.
-  - `repositories.py`: upsert em lote usando `ON CONFLICT` (PostgreSQL).
-  - `run_extraction.py`: orquestracao do fluxo de extracao + persistencia.
+```
+ESPN (soccerdata)
+      │
+      ▼
+  ┌────────────────────────┐
+  │  Airflow DAG:          │
+  │  get_brasileirao       │──► Raw files (JSON + CSV)
+  │  (extração)            │──► Fila JSONL (pending.jsonl)
+  └────────────────────────┘
+              │
+              ▼
+  ┌────────────────────────┐
+  │  Airflow DAG:          │
+  │  consume_brasileirao   │──► PostgreSQL (tabelas raw_soccerdata_*)
+  │  _queue_to_pg          │──► Controle (raw_ingestion_events)
+  │  (ingestão)            │──► done.jsonl / failed.jsonl
+  └────────────────────────┘
+              │
+              ▼
+  ┌────────────────────────┐
+  │  Spark (planejado)     │
+  │  Bronze → Silver       │──► PostgreSQL (tabelas curadas)
+  └────────────────────────┘
+```
 
-## Fluxo de Extracao
+### Camadas de Dados (Medallion)
 
-1. Validar conexao e existencia das tabelas no banco.
-2. Extrair e salvar liga e temporada.
-3. Extrair e salvar times e estadios.
-4. Extrair e salvar jogadores e estatisticas.
-5. Commit unico ao final; em caso de erro, rollback.
+- **Bronze**: dados brutos extraídos, persistidos tal qual nas tabelas `raw_soccerdata_*`.
+- **Silver**: dados limpos, normalizados e enriquecidos (Spark — em desenvolvimento).
+- **Gold**: agregações e métricas prontas para análise e ML (futuro).
 
-## Pre-requisitos
+## DAGs
 
-- Banco PostgreSQL ativo e acessivel.
-- Tabelas ja criadas no banco.
-- Chave da API-Football valida.
+### `get_brasileirao`
+> `dags/brasileirao_teams_to_pg.py`
 
-## Configuracao
+Extrai dados do Brasileirão via **soccerdata** (provider ESPN):
+- Lê o schedule completo da temporada.
+- Para cada partida, extrai o lineup de jogadores.
+- Grava dados brutos em arquivos locais (JSON por partida, CSV por lineup/time/jogador).
+- Enfileira mensagens em `output/queue/pending.jsonl` para ingestão posterior.
 
-Crie/ajuste o arquivo `.env` com:
+### `consume_brasileirao_queue_to_pg`
+> `dags/consume_brasileirao_queue_to_pg.py`
+
+Consome a fila JSONL e persiste no PostgreSQL:
+- Deduplicação por hash + chave semântica.
+- Criação dinâmica de tabelas e colunas a partir do payload.
+- Upsert via `ON CONFLICT` (idempotente).
+- Tabela de controle `raw_ingestion_events` para rastreabilidade.
+- Move arquivos processados para `output/processed/`.
+
+## Configuração
+
+### Variáveis de ambiente (`.env`)
 
 ```env
 API_FOOTBALL_KEY=seu_token
@@ -56,51 +88,21 @@ PGUSER=usuario
 PGPASSWORD=senha
 ```
 
-Instale dependencias:
+### Variáveis de ambiente do Airflow
 
-```bash
-pip install -r requirements.txt
-```
-
-## Execucao
-
-Rodar extracao da Serie A (id padrao = 71) para uma temporada:
-
-```bash
-python extraction/run_extraction.py --season 2023
-```
-
-Ou definir explicitamente a liga:
-
-```bash
-python extraction/run_extraction.py --league-id 71 --season 2023
-```
-
-Extrair um intervalo de temporadas (ex.: 2022 ate 2024):
-
-```bash
-python extraction/run_extraction.py --league-id 71 --season-start 2022 --season-end 2024
-```
-
-### Parametros de linha de comando
-
-- `--league-id`: define a liga na API-Football (ex.: Serie A = `71`).
-- `--season`: extrai um unico ano.
-- `--season-start` + `--season-end`: extrai um intervalo de anos (inclusive).
-- Regra de uso: informe `--season` **ou** o par `--season-start/--season-end`.
-
-## Comportamentos Importantes
-
-- O script possui validacao de banco antes de chamar a API.
-- Em limite diario da API (`errors.requests`), a execucao e encerrada imediatamente.
-- Em rate limit por minuto, o cliente aguarda e tenta novamente.
-- Em plano free, o endpoint de players respeita limite de paginas suportado.
-- Se a API retornar `errors.plan` para temporadas fora do acesso do plano, use anos suportados (no seu caso atual: `2022` a `2024`).
+| Variável | Default | Descrição |
+|---|---|---|
+| `OUTPUT_DIR` | `output` | Diretório raiz para dados extraídos |
+| `MAX_MATCHES` | `0` (todas) | Limite de partidas por execução |
+| `LOG_EVERY` | `10` | Frequência de log por partida |
+| `PG_CONN_ID` | `db-pg-futebol-dados` | Connection ID do PostgreSQL no Airflow |
+| `QUEUE_BATCH_SIZE` | `100` | Tamanho do lote de ingestão |
+| `MOVE_PROCESSED_FILES` | `true` | Mover arquivos após ingestão |
 
 ## Roadmap
 
-1. Orquestrar pipeline com Apache Airflow (DAGs agendadas, retries, observabilidade).
-2. Criar camadas de qualidade de dados (checks de consistencia e completude).
-3. Construir modulo de analise estatistica exploratoria e series temporais.
-4. Preparar dataset para ML e treinar modelos em PyTorch.
-5. Versionar datasets e modelos para reproducibilidade.
+1. ⬜ Integrar Apache Spark para camada Bronze → Silver.
+2. ⬜ Criar camadas de qualidade de dados (checks de consistência e completude).
+3. ⬜ Módulo de análise estatística exploratória e séries temporais.
+4. ⬜ Preparar dataset para ML e treinar modelos em PyTorch.
+5. ⬜ Versionamento de datasets e modelos para reproducibilidade.
