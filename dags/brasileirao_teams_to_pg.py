@@ -112,8 +112,11 @@ def get_brasileirao():
         elapsed = time.perf_counter() - started
         LOGGER.info("fetch_schedule completed in %.2fs", elapsed)
 
+        # Convert schedule dataframe to a list of dicts with iso-formatted strings for dates
+        schedule_records = json.loads(schedule.to_json(orient="records", date_format="iso"))
+
         return {
-            "schedule": schedule.to_dict(orient="records"),
+            "schedule": schedule_records,
             "output_root": str(output_root),
             "run_root": str(run_root),
             "run_ts": run_ts,
