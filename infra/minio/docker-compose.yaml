@@ -22,6 +22,8 @@ services:
     volumes:
       # Persist data locally so buckets and objects are not lost upon container restart
       - ./minio-data:/data
+    networks:
+      - datalake-network
     # Ensure the container automatically restarts on failure or system reboot
     restart: unless-stopped
 
@@ -57,5 +59,12 @@ services:
       # Keep container alive
       tail -f /dev/null
       '
+    networks:
+      - datalake-network
     # Match the restart policy of the main service
     restart: unless-stopped
+
+networks:
+  datalake-network:
+    name: datalake-network
+    driver: bridge
