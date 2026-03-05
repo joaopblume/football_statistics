@@ -35,36 +35,27 @@ services:
       # Ensure the MinIO container starts before this initialization script runs
       - minio
     # Execute a shell script to robustly initialize the connection and create buckets
-    entrypoint: >
-      /bin/sh -c "
-      # Loop continually until the MinIO API is successfully reached and the alias is created
+    entrypoint: |
+      /bin/sh -c '
+      # Keep attempting to set the alias until it succeeds
       until mc alias set local http://minio:9000 minioadmin minioadmin123; do
-        # Log a wait message to the console
-        echo 'Waiting for MinIO server to initialize...';
-        # Wait 2 seconds before the next attempt
-        sleep 2;
-      # End of the wait loop
-      done;
-
-      # Create the bucket designated for raw ingestion data
-      mc mb -p local/datalake-raw || true;
-      # Create the bucket designated for the Iceberg warehouse layer
-      mc mb -p local/datalake-warehouse || true;
-      # Create the bucket designated for artifacts like scripts or configuration files
-      mc mb -p local/datalake-artifacts || true;
-
-      # Explicitly disable anonymous access to secure the raw bucket
-      mc anonymous set none local/datalake-raw || true;
-      # Explicitly disable anonymous access to secure the warehouse bucket
-      mc anonymous set none local/datalake-warehouse || true;
-      # Explicitly disable anonymous access to secure the artifacts bucket
-      mc anonymous set none local/datalake-artifacts || true;
-
-      # Output a readiness message to the docker logs upon success
-      echo 'Buckets are ready for Iceberg!';
-
-      # Keep the container running to allow for ad-hoc 'mc' commands via 'docker exec'
+        echo "Waiting for MinIO server to initialize..."
+        sleep 2
+      done
+      
+      # Create buckets
+      mc mb -p local/datalake-raw || true
+      mc mb -p local/datalake-warehouse || true
+      mc mb -p local/datalake-artifacts || true
+      
+      # Set permissions
+      mc anonymous set none local/datalake-raw || true
+      mc anonymous set none local/datalake-warehouse || true
+      mc anonymous set none local/datalake-artifacts || true
+      
+      echo "MinIO buckets successfully created."
+      # Keep container alive
       tail -f /dev/null
-      "
+      '
     # Match the restart policy of the main service
     restart: unless-stopped
