@@ -1,4 +1,33 @@
+# Environments
 .env
 venv/
+env/
+.venv/
+
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+pytest_out.txt
+
+# Data & Output
 output/
+*.csv
+*.json
+*.jsonl
+*.parquet
+
+# Airflow
+airflow.cfg
+airflow.db
+unittests.cfg
+logs/
+airflow-webserver.pid
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+.agents/

@@ -1,108 +1,122 @@
-# Futebol Estatísticas
+# Futebol Estatísticas Data Pipeline
 
-Pipeline de dados de futebol com extração automatizada, armazenamento em camadas (medallion architecture) e persistência em PostgreSQL — orquestrado por **Apache Airflow**.
+Pipeline de dados de de futebol de ponta a ponta, projetado com práticas modernas de Data Engineering. O pipeline realiza a extração automatizada de dados, o armazenamento em camadas seguindo a arquitetura Medallion (Data Lakehouse) e a persistência final em PostgreSQL estruturado. A orquestração é inteiramente gerenciada pelo **Apache Airflow**.
 
-## Objetivo
+## Arquitetura de Dados (Data Engineering)
 
-1. Extrair dados de futebol de forma automatizada (soccerdata / ESPN).
-2. Processar e normalizar os dados com Apache Spark (Bronze → Silver).
-3. Persistir dados curados em PostgreSQL como fonte confiável.
-4. Realizar análises estatísticas a partir dos dados curados.
-5. Treinar modelos de Machine Learning com PyTorch (futuro).
+Este projeto segue princípios de **Arquitetura Lambda/Batch** para Data Engineering, priorizando resiliência, observabilidade e qualidade dos dados.
 
-## Stack
+### Camadas de Dados (Medallion Architecture)
 
-| Camada | Tecnologia |
-|---|---|
-| Orquestração | Apache Airflow (VPS) |
-| Processamento | Apache Spark (Docker / VPS) |
-| Banco de dados | PostgreSQL |
-| Extração | soccerdata (ESPN provider) |
-| Linguagem | Python 3.11+ |
-| Libs auxiliares | Pandas, Pendulum, python-dotenv |
+- **Bronze (Raw)**: Dados brutos recém extraídos da fonte. No nosso caso, arquivos locais (JSON, CSV, JSONL) injetados "as-is" no PostgreSQL (`raw_soccerdata_*`).
+  - O pipeline garante a extração confiável de entidades como partidas (matches), escalações (lineups) e perfis detalhados de jogadores (com `athlete_id` único da ESPN).
+- **Silver (Cleansed/Conformed)**: Dados limpos, normalizados e enriquecidos. (Fase 2 - Apache Spark/dbt).
+  - Tipagem estrita de colunas, tratamento de valores nulos, padronização de formatações de tempo e data.
+- **Gold (Curated/Analytics)**: Modelos dimensionais (Star Schema) agregados e prontos para alimentar dashboards de BI e recursos para Machine Learning.
 
-## Arquitetura
+## Pipeline Flow
 
-```
-ESPN (soccerdata)
-      │
-      ▼
-  ┌────────────────────────┐
-  │  Airflow DAG:          │
-  │  get_brasileirao       │──► Raw files (JSON + CSV)
-  │  (extração)            │──► Fila JSONL (pending.jsonl)
-  └────────────────────────┘
-              │
-              ▼
-  ┌────────────────────────┐
-  │  Airflow DAG:          │
-  │  consume_brasileirao   │──► PostgreSQL (tabelas raw_soccerdata_*)
-  │  _queue_to_pg          │──► Controle (raw_ingestion_events)
-  │  (ingestão)            │──► done.jsonl / failed.jsonl
-  └────────────────────────┘
-              │
-              ▼
-  ┌────────────────────────┐
-  │  Spark (planejado)     │
-  │  Bronze → Silver       │──► PostgreSQL (tabelas curadas)
-  └────────────────────────┘
+```text
+       [Source: ESPN API via soccerdata]
+                    │
+                    ▼
+  ┌────────────────────────────────────┐
+  │ Airflow DAG: get_brasileirao     │
+  │ (Data Extraction & Enrichment)     │
+  └────────────────────────────────────┘
+        │   ├─ fetch_schedule
+        │   ├─ extract_matches     (Extrai IDs únicos de atletas)
+        │   └─ enrich_profiles     (Enriquece perfis na API ESPN)
+        ▼
+[Data Lake (Local/S3): output/raw & queue/pending.jsonl]
+                    │
+                    ▼
+  ┌────────────────────────────────────┐
+  │ Airflow DAG: consume_queue_to_pg │
+  │ (Data Ingestion & Deduplication)   │
+  └────────────────────────────────────┘
+        │   ├─ load_payload
+        │   ├─ deduplicate         (Hash & Semantic Dedupe)
+        │   └─ dynamic_upsert      (Idempotent ON CONFLICT)
+        ▼
+[PostgreSQL: tabelas raw_soccerdata_*]  <-- BRONZE LAYER
 ```
 
-### Camadas de Dados (Medallion)
+## Stack Tecnológico
 
-- **Bronze**: dados brutos extraídos, persistidos tal qual nas tabelas `raw_soccerdata_*`.
-- **Silver**: dados limpos, normalizados e enriquecidos (Spark — em desenvolvimento).
-- **Gold**: agregações e métricas prontas para análise e ML (futuro).
-
-## DAGs
-
-### `get_brasileirao`
-> `dags/brasileirao_teams_to_pg.py`
-
-Extrai dados do Brasileirão via **soccerdata** (provider ESPN):
-- Lê o schedule completo da temporada.
-- Para cada partida, extrai o lineup de jogadores.
-- Grava dados brutos em arquivos locais (JSON por partida, CSV por lineup/time/jogador).
-- Enfileira mensagens em `output/queue/pending.jsonl` para ingestão posterior.
-
-### `consume_brasileirao_queue_to_pg`
-> `dags/consume_brasileirao_queue_to_pg.py`
-
-Consome a fila JSONL e persiste no PostgreSQL:
-- Deduplicação por hash + chave semântica.
-- Criação dinâmica de tabelas e colunas a partir do payload.
-- Upsert via `ON CONFLICT` (idempotente).
-- Tabela de controle `raw_ingestion_events` para rastreabilidade.
-- Move arquivos processados para `output/processed/`.
-
-## Configuração
-
-### Variáveis de ambiente (`.env`)
-
-```env
-API_FOOTBALL_KEY=seu_token
-PGHOST=localhost
-PGPORT=5432
-PGDATABASE=nome_do_banco
-PGUSER=usuario
-PGPASSWORD=senha
-```
-
-### Variáveis de ambiente do Airflow
-
-| Variável | Default | Descrição |
+| Categoria | Tecnologia | Propósito no Projeto |
 |---|---|---|
-| `OUTPUT_DIR` | `output` | Diretório raiz para dados extraídos |
-| `MAX_MATCHES` | `0` (todas) | Limite de partidas por execução |
-| `LOG_EVERY` | `10` | Frequência de log por partida |
-| `PG_CONN_ID` | `db-pg-futebol-dados` | Connection ID do PostgreSQL no Airflow |
-| `QUEUE_BATCH_SIZE` | `100` | Tamanho do lote de ingestão |
-| `MOVE_PROCESSED_FILES` | `true` | Mover arquivos após ingestão |
+| **Orquestração** | Apache Airflow 2.x | Agendamento, dependências, retries, observabilidade |
+| **Ingestão/Extração** | Python 3.11+, soccerdata | Requests HTTP, paralelismo iterativo, parsing de HTML/JSON |
+| **Processamento Batch**| Apache Spark (planejado) | Transformações pesadas e data quality (Silver/Gold) |
+| **Armazenamento** | PostgreSQL, Local FS | Storage relacional (DW) e Lakehouse inicial (Arquivos) |
+| **Data Quality** | Em breve (dbt/Great Expectations) | Contratos de dados e validações (Testes de esquema e completude) |
 
-## Roadmap
+## Estrutura de Diretórios
 
-1. ⬜ Integrar Apache Spark para camada Bronze → Silver.
-2. ⬜ Criar camadas de qualidade de dados (checks de consistência e completude).
-3. ⬜ Módulo de análise estatística exploratória e séries temporais.
-4. ⬜ Preparar dataset para ML e treinar modelos em PyTorch.
-5. ⬜ Versionamento de datasets e modelos para reproducibilidade.
+```text
+football_statistics/
+├── dags/                     # Airflow DAGs
+│   ├── lib/                  # Extracted business logic & modular code
+│   ├── brasileirao_teams_to_pg.py
+│   ├── consume_brasileirao_queue_to_pg.py
+│   └── README.md             # DAG Patterns documentation
+├── tests/                    # Unit tests & Data Quality
+│   └── test_extraction_helpers.py
+├── output/                   # Data Lake (Git Ignored)
+├── .env                      # Environment Variables
+├── .gitignore
+└── README.md
+```
+
+## Configuração do Ambiente
+
+1. **Python Virtual Environment**:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   venv\Scripts\activate     # Windows
+   pip install -r requirements.txt
+   ```
+
+2. **Variáveis de Ambiente (`.env`)**:
+   ```env
+   # PostgreSQL
+   PGHOST=localhost
+   PGPORT=5432
+   PGDATABASE=nome_do_banco
+   PGUSER=usuario
+   PGPASSWORD=senha
+   
+   # Airflow / Runtime
+   OUTPUT_DIR=output
+   MAX_MATCHES=0
+   LOG_EVERY=10
+   PG_CONN_ID=db-pg-futebol-dados
+   ESPN_API_DELAY=0.5
+   QUEUE_BATCH_SIZE=100
+   MOVE_PROCESSED_FILES=true
+   ```
+
+3. **Symlink do Airflow**:
+   Para integrar com sua instância Airflow local ou na VPS:
+   ```bash
+   ln -sfn $(pwd)/dags $AIRFLOW_HOME/dags
+   ```
+
+## Testes e Qualidade
+
+O projeto utiliza `pytest` para testes unitários da lógica de transformação e extração localizada em `dags/lib/`. 
+
+```bash
+pytest tests/ -v
+```
+
+## Roteiro de Desenvolvimento (Roadmap)
+
+- [x] Extração confiável com `soccerdata` (capturando `athlete_id` robusto).
+- [x] Pipeline incremental (arquitetura Queue-based com `.jsonl`).
+- [x] Ingestão Idempotente no PostgreSQL (Dynamic Upsert).
+- [ ] Construir a camada Silver e Testes de Qualidade de Dados (dbt / Spark).
+- [ ] Modelagem Dimensional (Gold) para features analíticas.
+- [ ] Treinamento de Modelos Preditivos e Machine Learning (PyTorch).
