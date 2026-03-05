@@ -17,21 +17,21 @@ The `docker-compose.yaml` file defines a Spark cluster consisting of:
 
 ```bash
 # Start the Spark cluster in detached mode
-docker-compose up -d
+docker compose up -d
 ```
 
 3. To check the logs, you can use:
 
 ```bash
 # View and follow logs from the Spark cluster containers
-docker-compose logs -f
+docker compose logs -f
 ```
 
 4. To stop the cluster, run:
 
 ```bash
 # Stop the Spark cluster and remove the containers
-docker-compose down
+docker compose down
 ```
 
 ## Accessing the UI

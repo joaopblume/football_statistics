@@ -16,18 +16,18 @@ help:
 # Notice that MinIO is started first because Spark depends on its network
 infra-up:
 	@echo "Starting MinIO Data Lake..."
-	cd infra/minio && docker-compose up -d
+	cd infra/minio && docker compose up -d
 	@echo "Starting Jupyter PySpark environment..."
-	cd infra/spark && docker-compose up -d
+	cd infra/spark && docker compose up -d
 	@echo "Infrastructure is up and running!"
 	@echo "You can check Jupyter logs with: make logs-spark"
 
 # Target to stop the infrastructure
 infra-down:
 	@echo "Stopping Jupyter PySpark environment..."
-	cd infra/spark && docker-compose down
+	cd infra/spark && docker compose down
 	@echo "Stopping MinIO Data Lake..."
-	cd infra/minio && docker-compose down
+	cd infra/minio && docker compose down
 	@echo "Infrastructure stopped."
 
 # Target to restart the infrastructure safely
@@ -35,8 +35,8 @@ infra-restart: infra-down infra-up
 
 # Target to view Spark logs (useful for getting the Jupyter token)
 logs-spark:
-	cd infra/spark && docker-compose logs -f jupyter-spark
+	cd infra/spark && docker compose logs -f jupyter-spark
 
 # Target to view MinIO initialization logs
 logs-minio:
-	cd infra/minio && docker-compose logs -f minio-mc
+	cd infra/minio && docker compose logs -f minio-mc
