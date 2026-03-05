@@ -1,8 +1,9 @@
 """DAG: get_brasileirao -- Extract football data from ESPN via soccerdata.
 
-Extracts match schedules, lineups (with ESPN athlete IDs), and player
-profiles for the Brasileirao season.  Results are saved as raw files
-and enqueued into ``pending.jsonl`` for downstream ingestion.
+Extracts match schedules, matchsheets (team stats), lineups (with ESPN
+athlete IDs and player-level goals/assists), and player profiles for the
+Brasileirao season.  Results are saved as raw files and enqueued into
+``pending.jsonl`` for downstream ingestion.
 
 DAG structure (4 tasks):
     fetch_schedule >> extract_matches >> enrich_player_profiles >> enqueue_results
@@ -123,14 +124,19 @@ def get_brasileirao():
         }
 
     # ------------------------------------------------------------------
-    # Task 2: Extract matches and lineups (with athlete IDs)
+    # Task 2: Extract matches, matchsheet stats, and lineups
     # ------------------------------------------------------------------
     @task()
     def extract_matches(schedule_data: dict[str, Any]) -> dict[str, Any]:
-        """For each match: read raw ESPN summary JSON and parse lineups WITH athlete IDs.
+        """For each match: extract matchsheet (team stats), lineup (player stats).
 
-        Instead of using soccerdata's read_lineup() (which discards athlete IDs),
-        we read the cached summary JSON directly and parse the roster ourselves.
+        Uses three soccerdata methods:
+        - read_schedule() data (already fetched in Task 1)
+        - read_matchsheet() for team-level stats (possession, shots, cards, etc.)
+        - read_lineup() for player-level stats (goals, assists, etc.)
+
+        Also reads the raw ESPN summary JSON to parse lineups WITH athlete IDs
+        (which soccerdata's read_lineup discards).
 
         Returns a dict with queue messages, collected lineups, and unique athlete IDs.
         """
@@ -151,39 +157,209 @@ def get_brasileirao():
 
         queue_messages: list[dict[str, Any]] = []
         collected_lineups: list[pd.DataFrame] = []
+        collected_sd_lineups: list[pd.DataFrame] = []  # soccerdata lineup (goals/assists)
+        collected_matchsheets: list[pd.DataFrame] = []  # team stats per match
         all_athlete_ids: set[int] = set()
         total_matches = len(schedule)
         lineup_success = 0
         lineup_fail = 0
 
+        # ---------------------------------------------------------------
+        # Batch-fetch matchsheet and lineup via soccerdata (all matches)
+        # ---------------------------------------------------------------
+        LOGGER.info("Batch-fetching matchsheet data via read_matchsheet()...")
+        t0 = time.perf_counter()
+        try:
+            # Fetch all matchsheets at once (soccerdata iterates internally)
+            all_matchsheet_df = reader.read_matchsheet().reset_index()
+            LOGGER.info(
+                "read_matchsheet completed in %.2fs (%s rows)",
+                time.perf_counter() - t0,
+                len(all_matchsheet_df),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("read_matchsheet failed: %s -- continuing without team stats", exc)
+            all_matchsheet_df = pd.DataFrame()
+
+        LOGGER.info("Batch-fetching lineup data via read_lineup()...")
+        t0 = time.perf_counter()
+        try:
+            # Fetch all lineups at once (soccerdata iterates internally)
+            all_sd_lineup_df = reader.read_lineup().reset_index()
+            LOGGER.info(
+                "read_lineup completed in %.2fs (%s rows)",
+                time.perf_counter() - t0,
+                len(all_sd_lineup_df),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("read_lineup failed: %s -- continuing without player stats", exc)
+            all_sd_lineup_df = pd.DataFrame()
+
+        # ---------------------------------------------------------------
+        # Per-match processing loop
+        # ---------------------------------------------------------------
         for idx, row in enumerate(schedule.itertuples(index=False), start=1):
             loop_started = time.perf_counter()
             game_id = int(getattr(row, "game_id"))
             game_slug_str = slug(getattr(row, "game"))
+            game_name = getattr(row, "game")
             match_dir = run_root / "matches" / f"{game_id}_{game_slug_str}"
 
             if idx == 1 or idx % max(1, log_every) == 0:
                 LOGGER.info("Processing match %s/%s game_id=%s", idx, total_matches, game_id)
 
-            # Save the schedule row as JSON (match entity)
+            # Build enriched match entity from the schedule row
             schedule_row = {k: getattr(row, k) for k in schedule.columns}
-            schedule_json = match_dir / "schedule_row.json"
-            write_json(schedule_json, schedule_row)
 
-            # Enqueue the match entity
+            # --- Derive scores from soccerdata lineup (total_goals per team) ---
+            home_score = None
+            away_score = None
+            if not all_sd_lineup_df.empty and "game" in all_sd_lineup_df.columns:
+                # Filter lineup rows for this match
+                match_lineup = all_sd_lineup_df[
+                    all_sd_lineup_df["game"] == game_name
+                ].copy()
+
+                if not match_lineup.empty and "total_goals" in match_lineup.columns:
+                    # Sum total_goals grouped by is_home flag
+                    match_lineup["total_goals"] = pd.to_numeric(
+                        match_lineup["total_goals"], errors="coerce"
+                    ).fillna(0)
+
+                    if "is_home" in match_lineup.columns:
+                        # Group by is_home to get home vs away scores
+                        score_map = match_lineup.groupby("is_home")["total_goals"].sum()
+                        home_score = int(score_map.get(True, 0))
+                        away_score = int(score_map.get(False, 0))
+
+            # --- Extract matchsheet stats for this match ---
+            venue = None
+            attendance = None
+            home_stats = {}
+            away_stats = {}
+            if not all_matchsheet_df.empty and "game" in all_matchsheet_df.columns:
+                # Filter matchsheet rows for this match (2 rows: home + away)
+                match_ms = all_matchsheet_df[
+                    all_matchsheet_df["game"] == game_name
+                ].copy()
+
+                if not match_ms.empty:
+                    # Extract venue and attendance from the first row
+                    venue = match_ms["venue"].iloc[0] if "venue" in match_ms.columns else None
+                    attendance = (
+                        match_ms["attendance"].iloc[0]
+                        if "attendance" in match_ms.columns
+                        else None
+                    )
+
+                    # Stat columns to extract (everything except metadata)
+                    meta_cols = {
+                        "league", "season", "game", "team", "is_home",
+                        "venue", "attendance", "capacity", "roster",
+                    }
+                    stat_cols = [c for c in match_ms.columns if c not in meta_cols]
+
+                    # Separate home and away team stats
+                    if "is_home" in match_ms.columns:
+                        home_row = match_ms[match_ms["is_home"] == True]  # noqa: E712
+                        away_row = match_ms[match_ms["is_home"] == False]  # noqa: E712
+                        if not home_row.empty:
+                            home_stats = {
+                                f"home_{c}": home_row[c].iloc[0] for c in stat_cols
+                            }
+                        if not away_row.empty:
+                            away_stats = {
+                                f"away_{c}": away_row[c].iloc[0] for c in stat_cols
+                            }
+
+                    # Save per-match matchsheet CSV
+                    ms_csv = match_dir / "matchsheet.csv"
+                    # Drop the roster column (raw JSON, too large for CSV)
+                    ms_save = match_ms.drop(columns=["roster"], errors="ignore")
+                    write_csv(ms_csv, ms_save)
+                    collected_matchsheets.append(ms_save)
+
+                    # Enqueue the match_stats entity
+                    queue_messages.append(
+                        build_queue_message(
+                            entity_type="match_stats",
+                            entity_id=game_id,
+                            payload_format="csv",
+                            path=str(ms_csv),
+                            provider="espn",
+                            league=LEAGUE_KEY,
+                            season=SEASON,
+                        )
+                    )
+
+            # --- Build enriched match entity ---
+            enriched_match = {
+                **schedule_row,
+                "home_score": home_score,
+                "away_score": away_score,
+                "total_goals": (
+                    (home_score or 0) + (away_score or 0)
+                    if home_score is not None
+                    else None
+                ),
+                "goal_diff": (
+                    abs((home_score or 0) - (away_score or 0))
+                    if home_score is not None
+                    else None
+                ),
+                "is_draw": (
+                    home_score == away_score
+                    if home_score is not None
+                    else None
+                ),
+                "venue": venue,
+                "attendance": attendance,
+                # Flatten team stats into the match entity
+                **home_stats,
+                **away_stats,
+            }
+
+            # Save the enriched match as JSON
+            match_json_path = match_dir / "match.json"
+            write_json(match_json_path, enriched_match)
+
+            # Enqueue the enriched match entity
             queue_messages.append(
                 build_queue_message(
                     entity_type="match",
                     entity_id=game_id,
                     payload_format="json",
-                    path=str(schedule_json),
+                    path=str(match_json_path),
                     provider="espn",
                     league=LEAGUE_KEY,
                     season=SEASON,
                 )
             )
 
-            # Read the raw ESPN summary JSON (uses soccerdata's cache)
+            # --- Save soccerdata lineup for this match (has goals/assists) ---
+            if not all_sd_lineup_df.empty and "game" in all_sd_lineup_df.columns:
+                match_sd_lineup = all_sd_lineup_df[
+                    all_sd_lineup_df["game"] == game_name
+                ].copy()
+                if not match_sd_lineup.empty:
+                    sd_lineup_csv = match_dir / "player_stats.csv"
+                    write_csv(sd_lineup_csv, match_sd_lineup)
+                    collected_sd_lineups.append(match_sd_lineup)
+
+                    # Enqueue the player match stats entity
+                    queue_messages.append(
+                        build_queue_message(
+                            entity_type="player_match_stats",
+                            entity_id=game_id,
+                            payload_format="csv",
+                            path=str(sd_lineup_csv),
+                            provider="espn",
+                            league=LEAGUE_KEY,
+                            season=SEASON,
+                        )
+                    )
+
+            # --- Parse custom lineup WITH athlete IDs (from raw summary JSON) ---
             try:
                 t_summary = time.perf_counter()
                 league_id = schedule_row.get("league_id", ESPN_LEAGUE_KEY)
@@ -201,9 +377,9 @@ def get_brasileirao():
                 LOGGER.exception("Failed to load summary for game_id=%s: %s", game_id, exc)
                 continue
 
-            # Parse rosters from both teams
+            # Parse rosters from both teams (custom parser for athlete IDs)
             game_info = {
-                "game": getattr(row, "game"),
+                "game": game_name,
                 "game_id": game_id,
                 "league": LEAGUE_KEY,
                 "season": SEASON,
@@ -243,7 +419,7 @@ def get_brasileirao():
                 full_lineup = pd.concat(match_lineups, ignore_index=True)
                 collected_lineups.append(full_lineup)
 
-                # Save lineup CSV
+                # Save lineup CSV (with athlete IDs)
                 lineup_csv = match_dir / "lineup.csv"
                 write_csv(lineup_csv, full_lineup)
 
@@ -280,7 +456,9 @@ def get_brasileirao():
             len(all_athlete_ids),
         )
 
+        # ---------------------------------------------------------------
         # Aggregate lineups by team and player (preserving backward compat)
+        # ---------------------------------------------------------------
         if collected_lineups:
             all_lineups = pd.concat(collected_lineups, ignore_index=True)
         else:
@@ -319,6 +497,17 @@ def get_brasileirao():
                         season=SEASON,
                     )
                 )
+
+        # Save aggregated matchsheet and soccerdata lineup CSVs at run level
+        if collected_matchsheets:
+            all_ms = pd.concat(collected_matchsheets, ignore_index=True)
+            write_csv(run_root / "all_matchsheets.csv", all_ms)
+            LOGGER.info("Saved aggregated matchsheet CSV (%s rows)", len(all_ms))
+
+        if collected_sd_lineups:
+            all_sd = pd.concat(collected_sd_lineups, ignore_index=True)
+            write_csv(run_root / "all_player_match_stats.csv", all_sd)
+            LOGGER.info("Saved aggregated player match stats CSV (%s rows)", len(all_sd))
 
         elapsed = time.perf_counter() - started
         LOGGER.info("extract_matches completed in %.2fs", elapsed)
