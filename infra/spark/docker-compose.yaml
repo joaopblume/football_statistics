@@ -10,6 +10,12 @@ services:
       # Credentials for MinIO (mapped to Hadoop S3A)
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin123
+
+      # Expose Spark to all processes (including docker exec).
+      # Without these, processes launched via 'docker exec' cannot find
+      # pyspark because they bypass the Jupyter startup scripts.
+      SPARK_HOME: /usr/local/spark
+      PYTHONPATH: /usr/local/spark/python:/usr/local/spark/python/lib/py4j-0.10.9.7-src.zip
       
       # Descobrimos que a versão do Hadoop base dessa imagem (jupyter/pyspark-notebook) não possui
       # algumas classes da 3.3.6. A versão 3.3.4 (padrão do Spark 3.5 pre-built) deve funcionar.
