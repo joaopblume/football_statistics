@@ -125,10 +125,12 @@ def brasileirao_lakehouse_pipeline():
     run_spark_silver = BashOperator(
         task_id="run_spark_silver",
         bash_command=(
-            f"docker exec {SPARK_CONTAINER} "
+            # Use login shell (-lc) to ensure conda env with pyspark is loaded
+            f"docker exec {SPARK_CONTAINER} bash -lc '"
             f"jupyter nbconvert --to notebook --execute {NOTEBOOK_PATH} "
             "--ExecutePreprocessor.timeout=1800 "  # 30 min timeout per cell
             "--ExecutePreprocessor.kernel_name=python3"
+            "'"
         ),
         # Allow 1 hour for the full Spark processing
         execution_timeout=timedelta(hours=1),
