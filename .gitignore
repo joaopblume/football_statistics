@@ -31,3 +31,4 @@ airflow-webserver.pid
 *.swp
 .DS_Store
 .agents/
+CLAUDE.md

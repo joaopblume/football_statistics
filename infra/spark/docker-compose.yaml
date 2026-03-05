@@ -1,0 +1,61 @@
+services:
+  # Define the Spark Master node service
+  spark-master:
+    # Use the official Bitnami Spark image which is well maintained
+    image: bitnami/spark:latest
+    # Assign a predictable container name for easier networking and log reading
+    container_name: spark-master
+    # Expose the necessary ports for UI and worker communication
+    ports:
+      # Expose the Spark Master Web UI on port 8080
+      - "8080:8080"
+      # Expose the Spark Master communication port on 7077
+      - "7077:7077"
+    # Define environment variables to configure the node
+    environment:
+      # Set the node role as the master
+      - SPARK_MODE=master
+      # Disable RPC authentication for local testing simplicity
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      # Disable RPC encryption for local testing
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      # Disable local storage encryption
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      # Disable SSL for the web UI
+      - SPARK_SSL_ENABLED=no
+    # Automatically restart the container if it stops gracefully or crashes
+    restart: unless-stopped
+
+  # Define the first Spark Worker node service
+  spark-worker-1:
+    # Use the same image as the master
+    image: bitnami/spark:latest
+    # Assign a predictable container name
+    container_name: spark-worker-1
+    # Ensure the worker starts only after the master node is up
+    depends_on:
+      - spark-master
+    # Map the worker Web UI to the host network
+    ports:
+      # Expose the worker UI on port 8081
+      - "8081:8081"
+    # Provide the necessary environment variables for the worker
+    environment:
+      # Set the node role to worker
+      - SPARK_MODE=worker
+      # Point the worker to the master node using the internal Docker network hostname
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      # Allocate 1 Gigabyte of memory for this worker
+      - SPARK_WORKER_MEMORY=1G
+      # Allocate 1 CPU core for this worker
+      - SPARK_WORKER_CORES=1
+      # Disable RPC authentication to match master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      # Disable RPC encryption to match master
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      # Disable local storage encryption to match master
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      # Disable SSL for the UI
+      - SPARK_SSL_ENABLED=no
+    # Restart automatically unless explicitly stopped
+    restart: unless-stopped

@@ -1,0 +1,70 @@
+services:
+  # Define the MinIO object storage service
+  minio:
+    # Use the latest official MinIO image
+    image: minio/minio:latest
+    # Assign a predictable container name
+    container_name: minio
+    # Run the server daemon and explicitly bind the web console to port 9001
+    command: server /data --console-address ":9001"
+    ports:
+      # S3 API port (used by engines like Spark, Trino, and Iceberg)
+      - "9000:9000"
+      # Web console port (used for manual GUI administration)
+      - "9001:9001"
+    environment:
+      # Root user (functionally equivalent to an AWS Access Key)
+      MINIO_ROOT_USER: minioadmin
+      # Root password (functionally equivalent to an AWS Secret Key)
+      MINIO_ROOT_PASSWORD: minioadmin123
+      # Set a default region to prevent errors from strict AWS S3 client libraries
+      MINIO_REGION_NAME: us-east-1
+    volumes:
+      # Persist data locally so buckets and objects are not lost upon container restart
+      - ./minio-data:/data
+    # Ensure the container automatically restarts on failure or system reboot
+    restart: unless-stopped
+
+  # Define the MinIO Client (mc) service for automated initialization
+  mc:
+    # Use the official MinIO client image
+    image: minio/mc:latest
+    # Assign a predictable container name
+    container_name: minio-mc
+    depends_on:
+      # Ensure the MinIO container starts before this initialization script runs
+      - minio
+    # Execute a shell script to robustly initialize the connection and create buckets
+    entrypoint: >
+      /bin/sh -c "
+      # Loop continually until the MinIO API is successfully reached and the alias is created
+      until mc alias set local http://minio:9000 minioadmin minioadmin123; do
+        # Log a wait message to the console
+        echo 'Waiting for MinIO server to initialize...';
+        # Wait 2 seconds before the next attempt
+        sleep 2;
+      # End of the wait loop
+      done;
+
+      # Create the bucket designated for raw ingestion data
+      mc mb -p local/datalake-raw || true;
+      # Create the bucket designated for the Iceberg warehouse layer
+      mc mb -p local/datalake-warehouse || true;
+      # Create the bucket designated for artifacts like scripts or configuration files
+      mc mb -p local/datalake-artifacts || true;
+
+      # Explicitly disable anonymous access to secure the raw bucket
+      mc anonymous set none local/datalake-raw || true;
+      # Explicitly disable anonymous access to secure the warehouse bucket
+      mc anonymous set none local/datalake-warehouse || true;
+      # Explicitly disable anonymous access to secure the artifacts bucket
+      mc anonymous set none local/datalake-artifacts || true;
+
+      # Output a readiness message to the docker logs upon success
+      echo 'Buckets are ready for Iceberg!';
+
+      # Keep the container running to allow for ad-hoc 'mc' commands via 'docker exec'
+      tail -f /dev/null
+      "
+    # Match the restart policy of the main service
+    restart: unless-stopped
