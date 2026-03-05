@@ -130,6 +130,7 @@ def brasileirao_lakehouse_pipeline():
             # so the Jupyter kernel spawned by nbconvert will find pyspark.
             f"docker exec {SPARK_CONTAINER} "
             f"jupyter nbconvert --to notebook --execute {NOTEBOOK_PATH} "
+            "--output-dir /tmp "
             "--ExecutePreprocessor.timeout=1800 "
             "--ExecutePreprocessor.kernel_name=python3"
         ),
