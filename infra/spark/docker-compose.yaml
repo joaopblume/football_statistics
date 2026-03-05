@@ -33,6 +33,13 @@ services:
       - datalake-network
     # Do not auto-restart: Airflow manages the Spark lifecycle (start/stop)
     restart: "no"
+    # Cap memory usage so the VM is not overwhelmed
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 1g
 
 networks:
   # Define the external network created by the MinIO docker-compose
