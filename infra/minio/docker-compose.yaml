@@ -26,6 +26,13 @@ services:
       - datalake-network
     # Ensure the container automatically restarts on failure or system reboot
     restart: unless-stopped
+    # Cap memory: MinIO is lightweight for this workload (small JSON files)
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+        reservations:
+          memory: 128m
 
   # Define the MinIO Client (mc) service for automated initialization
   mc:
