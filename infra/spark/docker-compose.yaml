@@ -25,7 +25,8 @@ services:
     networks:
       # Connect to the external network shared with MinIO
       - datalake-network
-    restart: unless-stopped
+    # Do not auto-restart: Airflow manages the Spark lifecycle (start/stop)
+    restart: "no"
 
 networks:
   # Define the external network created by the MinIO docker-compose
