@@ -11,6 +11,10 @@ help:
 	@echo "  make infra-restart - Restarts the entire infrastructure"
 	@echo "  make logs-spark    - Follow the PySpark/Jupyter logs"
 	@echo "  make logs-minio    - Follow the MinIO server logs"
+	@echo "  make airflow-install-services - (Linux only) Installs Airflow systemd services"
+	@echo "  make airflow-up    - Starts Airflow API server and scheduler via systemd"
+	@echo "  make airflow-down  - Stops Airflow services"
+	@echo "  make logs-airflow  - Follow Airflow systemd logs"
 
 # Target to start the infrastructure
 # Notice that MinIO is started first because Spark depends on its network
@@ -40,3 +44,33 @@ logs-spark:
 # Target to view MinIO initialization logs
 logs-minio:
 	cd infra/minio && docker compose logs -f minio-mc
+
+# ==========================================
+# Airflow Systemd Management (Linux/VPS only)
+# ==========================================
+
+airflow-install-services:
+	@echo "Installing Airflow systemd services (requires sudo)..."
+	sudo cp infra/airflow/airflow-api-server.service /etc/systemd/system/
+	sudo cp infra/airflow/airflow-scheduler.service /etc/systemd/system/
+	sudo cp infra/airflow/airflow-dag-processor.service /etc/systemd/system/
+	sudo cp infra/airflow/airflow.env /etc/default/airflow
+	sudo systemctl daemon-reload
+	sudo systemctl enable airflow-api-server
+	sudo systemctl enable airflow-scheduler
+	sudo systemctl enable airflow-dag-processor
+	@echo "Services installed and enabled to start on boot!"
+
+airflow-up:
+	@echo "Starting Airflow services..."
+	sudo systemctl start airflow-api-server airflow-scheduler airflow-dag-processor
+	@echo "Airflow is running! View logs with: make logs-airflow"
+
+airflow-down:
+	@echo "Stopping Airflow services..."
+	sudo systemctl stop airflow-api-server airflow-scheduler airflow-dag-processor
+	@echo "Airflow stopped."
+
+logs-airflow:
+	@echo "Following logs for Airflow Scheduler, API Server, and DAG Processor..."
+	sudo journalctl -u airflow-scheduler -u airflow-api-server -u airflow-dag-processor -f

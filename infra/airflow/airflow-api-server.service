@@ -1,0 +1,17 @@
+[Unit]
+Description=Airflow API Server
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+EnvironmentFile=/etc/default/airflow
+User=root
+Group=root
+Type=simple
+ExecStart=/root/airflow/venv/bin/airflow api-server
+Restart=on-failure
+RestartSec=10s
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
