@@ -4,47 +4,34 @@ Pipeline de dados de futebol de ponta a ponta, projetado com praticas modernas d
 
 ## Arquitetura de Dados (Medallion Architecture)
 
-```text
    [Source: ESPN API via soccerdata]
                 │
                 ▼
   ┌──────────────────────────────────┐
-  │ Airflow DAG:                     │
-  │ brasileirao_lakehouse_pipeline   │
+  │ Airflow DAG 1:                   │
+  │ brasileirao_bronze_extraction    │
   └──────────────────────────────────┘
-        │                        │
-        ▼                        ▼
-  ┌──────────┐            ┌────────────┐
-  │ Task 1   │            │ Task 2     │
-  │ docker   │            │ soccerdata │
-  │ start    │            │ + boto3    │
-  │ spark    │            │ → MinIO    │
-  └──────────┘            └────────────┘
-                                │
-                    ┌───────────┴───────────┐
-                    ▼           ▼           ▼
-              schedule.json matchsheet  lineup.json
-                    │       .json         │
-                    └───────────┬──────────┘
-                                ▼
-                    ┌────────────────────┐
-                    │ Task 3: Spark      │
-                    │ nbconvert --execute│
-                    │ (Bronze → Silver)  │
-                    └────────────────────┘
-                                │
-                    ┌───────────┼───────────┐
-                    ▼           ▼           ▼
-              Silver       Silver       Silver
-              Dimensions   Facts        Gold
-                                │
-                                ▼
-                    ┌────────────────────┐
-                    │ Task 4: docker     │
-                    │ stop spark         │
-                    │ (free RAM)         │
-                    └────────────────────┘
-```
+                │
+                ▼
+      Dataset("minio://.../bronze")
+                │
+                ▼
+  ┌──────────────────────────────────┐
+  │ Airflow DAG 2:                   │
+  │ brasileirao_silver_processing    │ (Starts/Stops Spark)
+  └──────────────────────────────────┘
+                │
+                ▼
+      Dataset("iceberg://.../silver")
+                │
+                ▼
+  ┌──────────────────────────────────┐
+  │ Airflow DAG 3:                   │
+  │ brasileirao_gold_processing      │ (Starts/Stops Spark)
+  └──────────────────────────────────┘
+                │
+                ▼
+      Dataset("iceberg://.../gold")
 
 ### Camadas de Dados
 

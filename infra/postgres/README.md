@@ -22,3 +22,43 @@ sudo apt install postgresql postgresql-contrib
 
 * Os serviços podem ser inicializados via `systemctl start postgresql.service`.
 * Lembre-se de configurar e liberar o arquivo nativo `pg_hba.conf` no Ubuntu além de setar o `listen_addresses='*'` em `postgresql.conf` caso outras máquinas (ou o próprio Spark via IP da ponte docker) necessitem pingar essa base para as inserções via JDBC.
+
+## Migrations
+
+As migrations ficam em `infra/postgres/migrations/` e são arquivos SQL numerados sequencialmente. Todas são **idempotentes** (seguras de rodar mais de uma vez).
+
+### Como aplicar no VPS
+
+```bash
+# Via variável de conexão (recomendado)
+psql "$DATABASE_URL" -f infra/postgres/migrations/001_pipeline_season_control.sql
+
+# Ou especificando host/user/db explicitamente
+psql -h localhost -U <user> -d <dbname> -f infra/postgres/migrations/001_pipeline_season_control.sql
+```
+
+> `DATABASE_URL` deve estar no formato `postgresql://user:password@host:port/dbname`.
+
+### Migrations disponíveis
+
+| Arquivo | O que cria | Quando aplicar |
+|---|---|---|
+| `001_pipeline_season_control.sql` | Tabela `pipeline_season_control` + trigger `updated_at` + índice | Na primeira implantação da pipeline Lakehouse (Phase 1) |
+
+### Adicionar uma nova season para processar
+
+Após aplicar a migration 001, insira a season desejada:
+
+```sql
+INSERT INTO pipeline_season_control (league_key, season, status)
+VALUES ('BRA-Brasileirao', 2025, 'pending')
+ON CONFLICT (league_key, season) DO NOTHING;
+```
+
+### Reset de uma season com falha (retry)
+
+```sql
+UPDATE pipeline_season_control
+SET status = 'pending', last_error = NULL, last_error_stage = NULL
+WHERE league_key = 'BRA-Brasileirao' AND season = 2024;
+```
