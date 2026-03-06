@@ -423,8 +423,7 @@ class TestBuildEnrichedLineup:
             )
         }
 
-        with patch("lib.extraction_helpers._config") as mock_config:
-            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+        with patch.dict("soccerdata._config.LEAGUE_DICT", {"BRA-Brasileirao": {"ESPN": "bra.1"}}):
             reader = _make_reader(summaries)
             result = _build_enriched_lineup(
                 schedule, sd_lineup, reader, "BRA-Brasileirao", 2024
@@ -452,8 +451,7 @@ class TestBuildEnrichedLineup:
             )
         }
 
-        with patch("lib.extraction_helpers._config") as mock_config:
-            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+        with patch.dict("soccerdata._config.LEAGUE_DICT", {"BRA-Brasileirao": {"ESPN": "bra.1"}}):
             result = _build_enriched_lineup(
                 schedule, sd_lineup, _make_reader(summaries), "BRA-Brasileirao", 2024
             )
@@ -479,8 +477,7 @@ class TestBuildEnrichedLineup:
             {"game": "X - Y", "player": "Someone", "team": "X", "total_goals": 0},
         ])
 
-        with patch("lib.extraction_helpers._config") as mock_config:
-            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+        with patch.dict("soccerdata._config.LEAGUE_DICT", {"BRA-Brasileirao": {"ESPN": "bra.1"}}):
             # No summaries for game_id 404 → FileNotFoundError
             reader = _make_reader({})
             result = _build_enriched_lineup(
@@ -502,8 +499,7 @@ class TestBuildEnrichedLineup:
             2: _minimal_summary("C", "D", [{"athlete_id": 20, "name": "Delta"}], []),
         }
 
-        with patch("lib.extraction_helpers._config") as mock_config:
-            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+        with patch.dict("soccerdata._config.LEAGUE_DICT", {"BRA-Brasileirao": {"ESPN": "bra.1"}}):
             result = _build_enriched_lineup(
                 schedule, sd_lineup, _make_reader(summaries), "BRA-Brasileirao", 2024
             )
@@ -524,8 +520,7 @@ class TestBuildEnrichedLineup:
             77: _minimal_summary("X", "Y", [{"athlete_id": 99, "name": "Scorer"}], [])
         }
 
-        with patch("lib.extraction_helpers._config") as mock_config:
-            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+        with patch.dict("soccerdata._config.LEAGUE_DICT", {"BRA-Brasileirao": {"ESPN": "bra.1"}}):
             result = _build_enriched_lineup(
                 schedule, sd_lineup, _make_reader(summaries), "BRA-Brasileirao", 2024
             )
