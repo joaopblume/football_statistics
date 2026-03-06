@@ -45,6 +45,7 @@ psql -h localhost -U <user> -d <dbname> -f infra/postgres/migrations/001_pipelin
 |---|---|---|
 | `001_pipeline_season_control.sql` | Tabela `pipeline_season_control` + trigger `updated_at` + índice | Na primeira implantação da pipeline Lakehouse (Phase 1) |
 | `002_pipeline_quality_checks.sql` | Tabela `pipeline_quality_checks` para rastrear resultados de quality checks por season/stage | Após a migration 001 (Phase 6) |
+| `003_seed_seasons.sql` | Insere seasons 2022–2025 na fila (`status = 'pending'`) | Após a migration 001, antes de ativar o Bronze DAG com `schedule="@weekly"` |
 
 ### Consultar qualidade de uma season
 

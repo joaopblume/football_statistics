@@ -75,6 +75,28 @@ def write_csv(path: Path, df: pd.DataFrame) -> None:
     df.to_csv(path, index=False)
 
 
+def _to_json_str(df: pd.DataFrame) -> str:
+    """Serialize a DataFrame to a compact JSON string (records orient, ISO dates)."""
+    if df.empty:
+        return "[]"
+    return json.dumps(
+        json.loads(df.to_json(orient="records", date_format="iso")),
+        indent=2, ensure_ascii=False,
+    )
+
+
+def _make_s3_client(endpoint: str, access_key: str, secret_key: str):
+    """Create a boto3 S3 client configured for MinIO."""
+    import boto3
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="us-east-1",
+    )
+
+
 def build_queue_message(
     entity_type: str,
     entity_id: str | int,
@@ -521,10 +543,10 @@ def _enrich_events_with_game_id(
 
 
 # ---------------------------------------------------------------------------
-# Bronze layer: Extract from ESPN and upload to MinIO
+# Bronze layer: Granular extract-and-upload functions (one per entity)
 # ---------------------------------------------------------------------------
 
-def extract_and_upload_to_minio(
+def extract_schedule_to_minio(
     league_key: str,
     season: int,
     minio_endpoint: str = "http://minio:9000",
@@ -532,139 +554,193 @@ def extract_and_upload_to_minio(
     minio_secret_key: str = "minioadmin123",
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
-    """Extract schedule, matchsheet, and lineup from ESPN and upload to MinIO.
-
-    Fetches all three ESPN soccerdata datasets, serializes them as JSON,
-    and uploads to the MinIO Bronze layer (datalake-raw bucket).
-
-    Parameters
-    ----------
-    league_key : str
-        The soccerdata league key, e.g. ``"BRA-Brasileirao"``.
-    season : int
-        The season year to fetch (e.g. 2024).
-    minio_endpoint : str
-        MinIO S3 API endpoint URL.
-    minio_access_key : str
-        MinIO root user / access key.
-    minio_secret_key : str
-        MinIO root password / secret key.
-    raw_bucket : str
-        Bucket name for the Bronze/raw layer.
+    """Fetch the season schedule from ESPN and upload schedule.json to MinIO.
 
     Returns
     -------
     dict
-        Metadata about the extraction: row counts, S3 paths, and timing.
+        ``{schedule_rows, game_map, bronze_base, elapsed_seconds}``
+        where *game_map* is ``{game_name: game_id}`` — a serializable dict
+        that downstream tasks use to correlate lineup/events with game IDs.
     """
-    import boto3
     import soccerdata as sd
 
-    started = time.perf_counter()
-
-    # Ensure the league mapping exists in soccerdata config
-    ensure_brasileirao_mapping(league_key)
-
-    # Initialize the ESPN reader
-    reader = sd.ESPN(leagues=league_key, seasons=season)
-    LOGGER.info("ESPN reader initialized for league=%s season=%s", league_key, season)
-
-    # --- Fetch schedule (match list) ---
     t0 = time.perf_counter()
+    ensure_brasileirao_mapping(league_key)
+    reader = sd.ESPN(leagues=league_key, seasons=season)
+
     schedule = reader.read_schedule().reset_index()
     LOGGER.info("read_schedule: %s rows in %.2fs", len(schedule), time.perf_counter() - t0)
 
-    # --- Fetch matchsheet (team stats per match) ---
+    # Build game_map for downstream tasks (JSON-serializable for XCom)
+    game_map: dict[str, int] = {}
+    if "game" in schedule.columns and "game_id" in schedule.columns:
+        game_map = {
+            str(row["game"]): int(row["game_id"])
+            for _, row in schedule.iterrows()
+            if pd.notna(row.get("game_id"))
+        }
+
+    bronze_base = f"espn/brasileirao/{season}"
+    schedule_key = f"{bronze_base}/schedule.json"
+    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
+    s3.put_object(Bucket=raw_bucket, Key=schedule_key, Body=_to_json_str(schedule))
+    LOGGER.info("Uploaded schedule to s3://%s/%s", raw_bucket, schedule_key)
+
+    return {
+        "schedule_rows": len(schedule),
+        "game_map": game_map,
+        "bronze_base": bronze_base,
+        "elapsed_seconds": round(time.perf_counter() - t0, 2),
+    }
+
+
+def extract_matchsheet_to_minio(
+    league_key: str,
+    season: int,
+    minio_endpoint: str = "http://minio:9000",
+    minio_access_key: str = "minioadmin",
+    minio_secret_key: str = "minioadmin123",
+    raw_bucket: str = "datalake-raw",
+) -> dict[str, Any]:
+    """Fetch per-match team stats from ESPN and upload matchsheet.json to MinIO.
+
+    Reads from soccerdata's local disk cache when available (populated by
+    a prior ``extract_schedule_to_minio`` call on the same machine).
+
+    Returns
+    -------
+    dict
+        ``{matchsheet_rows, elapsed_seconds}``
+    """
+    import soccerdata as sd
+
     t0 = time.perf_counter()
+    ensure_brasileirao_mapping(league_key)
+    reader = sd.ESPN(leagues=league_key, seasons=season)
+
     matchsheet = reader.read_matchsheet().reset_index()
-    # Drop the roster column (raw JSON blobs, too large for storage)
     matchsheet = matchsheet.drop(columns=["roster"], errors="ignore")
     LOGGER.info("read_matchsheet: %s rows in %.2fs", len(matchsheet), time.perf_counter() - t0)
 
-    # --- Fetch lineup (player stats per match) ---
-    # read_lineup() fetches soccerdata stats AND caches ESPN summary JSONs to disk.
-    # _build_enriched_lineup() then reads those cached files to extract athlete_id,
-    # merging it back into the soccerdata lineup via (game, player, team).
+    bronze_base = f"espn/brasileirao/{season}"
+    matchsheet_key = f"{bronze_base}/matchsheet.json"
+    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
+    s3.put_object(Bucket=raw_bucket, Key=matchsheet_key, Body=_to_json_str(matchsheet))
+    LOGGER.info("Uploaded matchsheet to s3://%s/%s", raw_bucket, matchsheet_key)
+
+    return {
+        "matchsheet_rows": len(matchsheet),
+        "elapsed_seconds": round(time.perf_counter() - t0, 2),
+    }
+
+
+def extract_lineup_to_minio(
+    league_key: str,
+    season: int,
+    game_map: dict[str, int],
+    minio_endpoint: str = "http://minio:9000",
+    minio_access_key: str = "minioadmin",
+    minio_secret_key: str = "minioadmin123",
+    raw_bucket: str = "datalake-raw",
+) -> dict[str, Any]:
+    """Fetch per-player lineup data from ESPN and upload lineup.json to MinIO.
+
+    Calls ``read_lineup()`` (which also caches ESPN summary JSONs to disk),
+    then enriches the result with ``athlete_id`` via ``_build_enriched_lineup``.
+
+    Parameters
+    ----------
+    game_map : dict[str, int]
+        Mapping of game name → game_id, as returned by
+        ``extract_schedule_to_minio``.
+
+    Returns
+    -------
+    dict
+        ``{lineup_rows, elapsed_seconds}``
+    """
+    import soccerdata as sd
+
     t0 = time.perf_counter()
+    ensure_brasileirao_mapping(league_key)
+    reader = sd.ESPN(leagues=league_key, seasons=season)
+
     sd_lineup = reader.read_lineup().reset_index()
     LOGGER.info("read_lineup: %s rows in %.2fs", len(sd_lineup), time.perf_counter() - t0)
 
-    t0 = time.perf_counter()
-    lineup = _build_enriched_lineup(schedule, sd_lineup, reader, league_key, season)
-    LOGGER.info(
-        "_build_enriched_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - t0
+    # Reconstruct a minimal schedule DataFrame from game_map so
+    # _build_enriched_lineup can correlate summary JSONs with games.
+    schedule_slim = pd.DataFrame(
+        [{"game": g, "game_id": gid} for g, gid in game_map.items()]
     )
 
-    # --- Fetch events (goals, cards, substitutions per match) ---
-    # read_events() may not be available for every ESPN league/season;
-    # failures are logged as warnings and do NOT abort the pipeline.
-    t0 = time.perf_counter()
-    try:
-        events = reader.read_events().reset_index()
-        events = _enrich_events_with_game_id(schedule, events)
-        LOGGER.info("read_events: %s rows in %.2fs", len(events), time.perf_counter() - t0)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning(
-            "read_events failed (non-fatal): %s — events.json will be empty", exc
-        )
-        events = pd.DataFrame()
+    te = time.perf_counter()
+    lineup = _build_enriched_lineup(schedule_slim, sd_lineup, reader, league_key, season)
+    LOGGER.info("_build_enriched_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - te)
 
-    # Convert DataFrames to JSON strings (records orientation, ISO dates)
-    def _to_json_str(df: pd.DataFrame) -> str:
-        if df.empty:
-            return "[]"
-        return json.dumps(
-            json.loads(df.to_json(orient="records", date_format="iso")),
-            indent=2, ensure_ascii=False,
-        )
-
-    schedule_json  = _to_json_str(schedule)
-    matchsheet_json = _to_json_str(matchsheet)
-    lineup_json    = _to_json_str(lineup)
-    events_json    = _to_json_str(events)
-
-    # Connect to MinIO via boto3 S3 client
-    s3_client = boto3.client(
-        "s3",
-        endpoint_url=minio_endpoint,
-        aws_access_key_id=minio_access_key,
-        aws_secret_access_key=minio_secret_key,
-        region_name="us-east-1",
-    )
-
-    # Build the Bronze path prefix
     bronze_base = f"espn/brasileirao/{season}"
-
-    # Upload schedule JSON to Bronze
-    schedule_key = f"{bronze_base}/schedule.json"
-    s3_client.put_object(Bucket=raw_bucket, Key=schedule_key, Body=schedule_json)
-    LOGGER.info("Uploaded schedule to s3://%s/%s", raw_bucket, schedule_key)
-
-    # Upload matchsheet JSON to Bronze
-    matchsheet_key = f"{bronze_base}/matchsheet.json"
-    s3_client.put_object(Bucket=raw_bucket, Key=matchsheet_key, Body=matchsheet_json)
-    LOGGER.info("Uploaded matchsheet to s3://%s/%s", raw_bucket, matchsheet_key)
-
-    # Upload lineup JSON to Bronze
     lineup_key = f"{bronze_base}/lineup.json"
-    s3_client.put_object(Bucket=raw_bucket, Key=lineup_key, Body=lineup_json)
+    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
+    s3.put_object(Bucket=raw_bucket, Key=lineup_key, Body=_to_json_str(lineup))
     LOGGER.info("Uploaded lineup to s3://%s/%s", raw_bucket, lineup_key)
 
-    # Upload events JSON to Bronze (empty array if read_events failed)
+    return {
+        "lineup_rows": len(lineup),
+        "elapsed_seconds": round(time.perf_counter() - t0, 2),
+    }
+
+
+def extract_events_to_minio(
+    league_key: str,
+    season: int,
+    game_map: dict[str, int],
+    minio_endpoint: str = "http://minio:9000",
+    minio_access_key: str = "minioadmin",
+    minio_secret_key: str = "minioadmin123",
+    raw_bucket: str = "datalake-raw",
+) -> dict[str, Any]:
+    """Fetch match events (goals, cards, subs) from ESPN and upload events.json.
+
+    ``read_events()`` may not be available for every ESPN league/season;
+    failures are treated as non-fatal — an empty array is uploaded instead.
+
+    Parameters
+    ----------
+    game_map : dict[str, int]
+        Mapping of game name → game_id, as returned by
+        ``extract_schedule_to_minio``.
+
+    Returns
+    -------
+    dict
+        ``{events_rows, elapsed_seconds}``
+    """
+    import soccerdata as sd
+
+    t0 = time.perf_counter()
+    ensure_brasileirao_mapping(league_key)
+    reader = sd.ESPN(leagues=league_key, seasons=season)
+
+    schedule_slim = pd.DataFrame(
+        [{"game": g, "game_id": gid} for g, gid in game_map.items()]
+    )
+
+    try:
+        events = reader.read_events().reset_index()
+        events = _enrich_events_with_game_id(schedule_slim, events)
+        LOGGER.info("read_events: %s rows in %.2fs", len(events), time.perf_counter() - t0)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("read_events failed (non-fatal): %s — events.json will be empty", exc)
+        events = pd.DataFrame()
+
+    bronze_base = f"espn/brasileirao/{season}"
     events_key = f"{bronze_base}/events.json"
-    s3_client.put_object(Bucket=raw_bucket, Key=events_key, Body=events_json)
+    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
+    s3.put_object(Bucket=raw_bucket, Key=events_key, Body=_to_json_str(events))
     LOGGER.info("Uploaded events to s3://%s/%s", raw_bucket, events_key)
 
-    elapsed = time.perf_counter() - started
-    LOGGER.info("extract_and_upload_to_minio completed in %.2fs", elapsed)
-
-    # Return metadata for downstream logging/XCom
     return {
-        "schedule_rows": len(schedule),
-        "matchsheet_rows": len(matchsheet),
-        "lineup_rows": len(lineup),
         "events_rows": len(events),
-        "bronze_base": bronze_base,
-        "raw_bucket": raw_bucket,
-        "elapsed_seconds": round(elapsed, 2),
+        "elapsed_seconds": round(time.perf_counter() - t0, 2),
     }
