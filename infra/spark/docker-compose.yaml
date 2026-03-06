@@ -37,9 +37,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 3g
         reservations:
-          memory: 1g
+          memory: 1.5g
 
 networks:
   # Define the external network created by the MinIO docker-compose

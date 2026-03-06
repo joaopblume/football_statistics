@@ -11,21 +11,35 @@ Ele deve ser configurado com pipelines de DAGs que ditam a frequência com que:
 2. Acionamos tarefas ETL ou scripts interconectados via sensores.
 3. Movemos os dados processados para a Database ou atualizamos views materializadas.
 
-## Instalação e Execução (Nativa via "screen")
+## Instalação e Execução (Nativa via systemd)
 
-Para esse ambiente, evitamos o overhead massivo causado pelo Celery/Redis que normalmente acompanham clusters Airflow via Docker. No diretório raiz existe uma representação estrutural da Virtual Environment (`venv/` ou `env_airflow`) contendo a instalação do Airflow:
+Para esse ambiente, evitamos o overhead massivo causado por dependências como Celery/Redis que normalmente acompanham clusters Airflow via Docker. No diretório raiz existe uma representação estrutural da Virtual Environment (`venv/`) contendo a instalação do Airflow 3.x.
+
+Na versão 3.0 do Airflow, rodamos 3 serviços essenciais de forma nativa e paralela com gerenciamento do sistema (Linux `systemd`):
+1. **API Server** (Substitui o Webserver clássico)
+2. **Scheduler**
+3. **DAG Processor** (Foi desacoplado no Airflow 3.x)
 
 ### Passos de Referência (Ubuntu VM):
 
-1. Ative seu ambiente virtual Python local onde o Airflow foi instalado.
-   `source ~/env_airflow/bin/activate` *(Exemplo)*
-2. Defina o home do Airflow para que ele não tente criar pastas ocultas indesejadas na home do usuário linux.
-   `export AIRFLOW_HOME=~/football_statistics/airflow`
-3. Como rodamos sem docker, o recomendando para deixar os processos rodando em background na máquina virtual Ubuntu é através de instâncias nativas do `screen`:
-   * Em um Terminal Screen 1: `airflow webserver --port 8080`
-   * Em um Terminal Screen 2: `airflow scheduler`
+1. **Geração e Instalação de Serviços:**
+   ```bash
+   make airflow-install-services
+   ```
+   *Isso irá copiar os scripts em `infra/airflow/*.service` para o sistema (`/etc/systemd/...`) e habilitá-los no boot.*
 
-A UI do orquestrador estará acessiva via Web:
+2. **Iniciando o Orquestrador:**
+   ```bash
+   make airflow-up
+   ```
+
+3. **Monitoramento e Logs Centralizados:**
+   Diga adeus ao "Screen" confuso. Agora seguimos os logs de todos os 3 serviços em tempo real:
+   ```bash
+   make logs-airflow
+   ```
+
+A UI do orquestrador estará acessível via Web:
 👉 [http://IP-DA-VM-DO-UBUNTU:8080](http://localhost:8080)
 
-*Nota: Os arquivos das suas DAGs reais (`/dags`) ficam disponíveis com versionamento git na raiz principal, sendo lincados nativamente (`ln -s`) ou referenciados no arquivo `airflow.cfg`.*
+*Nota: Os arquivos das suas DAGs reais (`/dags`) ficam disponíveis com versionamento git na raiz principal, sendo lincados nativamente (`ln -s`) ou lidos pelo DAG Processor a partir do seu `$AIRFLOW_HOME`.*
