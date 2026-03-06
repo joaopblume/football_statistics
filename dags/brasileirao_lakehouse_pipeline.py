@@ -16,9 +16,9 @@ from datetime import timedelta
 from typing import Any
 
 import pendulum
-from airflow.operators.bash import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import dag, task
-from airflow.utils.trigger_rule import TriggerRule
+from airflow.task.trigger_rule import TriggerRule
 
 from lib.extraction_helpers import extract_and_upload_to_minio
 
