@@ -486,6 +486,41 @@ def _build_enriched_lineup(
 
 
 # ---------------------------------------------------------------------------
+# Events enrichment: add game_id from schedule
+# ---------------------------------------------------------------------------
+
+def _enrich_events_with_game_id(
+    schedule: "pd.DataFrame",
+    events: "pd.DataFrame",
+) -> "pd.DataFrame":
+    """Add game_id to an events DataFrame by left-joining the schedule on ``game``.
+
+    Parameters
+    ----------
+    schedule : pd.DataFrame
+        Schedule DataFrame with at least ``game`` and ``game_id`` columns.
+    events : pd.DataFrame
+        Raw events DataFrame (output of ``reader.read_events().reset_index()``).
+
+    Returns
+    -------
+    pd.DataFrame
+        Events with a ``game_id`` column added (``None`` when unmatched).
+        Returns *events* unchanged if either DataFrame lacks the required columns.
+    """
+    if events.empty:
+        return events
+    if "game_id" not in schedule.columns or "game" not in events.columns:
+        LOGGER.warning(
+            "_enrich_events_with_game_id: missing 'game' or 'game_id' column — "
+            "returning events without game_id"
+        )
+        return events
+    game_id_map = schedule[["game", "game_id"]].drop_duplicates(subset="game")
+    return events.merge(game_id_map, on="game", how="left")
+
+
+# ---------------------------------------------------------------------------
 # Bronze layer: Extract from ESPN and upload to MinIO
 # ---------------------------------------------------------------------------
 
@@ -560,19 +595,33 @@ def extract_and_upload_to_minio(
         "_build_enriched_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - t0
     )
 
+    # --- Fetch events (goals, cards, substitutions per match) ---
+    # read_events() may not be available for every ESPN league/season;
+    # failures are logged as warnings and do NOT abort the pipeline.
+    t0 = time.perf_counter()
+    try:
+        events = reader.read_events().reset_index()
+        events = _enrich_events_with_game_id(schedule, events)
+        LOGGER.info("read_events: %s rows in %.2fs", len(events), time.perf_counter() - t0)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning(
+            "read_events failed (non-fatal): %s — events.json will be empty", exc
+        )
+        events = pd.DataFrame()
+
     # Convert DataFrames to JSON strings (records orientation, ISO dates)
-    schedule_json = json.dumps(
-        json.loads(schedule.to_json(orient="records", date_format="iso")),
-        indent=2, ensure_ascii=False,
-    )
-    matchsheet_json = json.dumps(
-        json.loads(matchsheet.to_json(orient="records", date_format="iso")),
-        indent=2, ensure_ascii=False,
-    )
-    lineup_json = json.dumps(
-        json.loads(lineup.to_json(orient="records", date_format="iso")),
-        indent=2, ensure_ascii=False,
-    )
+    def _to_json_str(df: pd.DataFrame) -> str:
+        if df.empty:
+            return "[]"
+        return json.dumps(
+            json.loads(df.to_json(orient="records", date_format="iso")),
+            indent=2, ensure_ascii=False,
+        )
+
+    schedule_json  = _to_json_str(schedule)
+    matchsheet_json = _to_json_str(matchsheet)
+    lineup_json    = _to_json_str(lineup)
+    events_json    = _to_json_str(events)
 
     # Connect to MinIO via boto3 S3 client
     s3_client = boto3.client(
@@ -601,6 +650,11 @@ def extract_and_upload_to_minio(
     s3_client.put_object(Bucket=raw_bucket, Key=lineup_key, Body=lineup_json)
     LOGGER.info("Uploaded lineup to s3://%s/%s", raw_bucket, lineup_key)
 
+    # Upload events JSON to Bronze (empty array if read_events failed)
+    events_key = f"{bronze_base}/events.json"
+    s3_client.put_object(Bucket=raw_bucket, Key=events_key, Body=events_json)
+    LOGGER.info("Uploaded events to s3://%s/%s", raw_bucket, events_key)
+
     elapsed = time.perf_counter() - started
     LOGGER.info("extract_and_upload_to_minio completed in %.2fs", elapsed)
 
@@ -609,6 +663,7 @@ def extract_and_upload_to_minio(
         "schedule_rows": len(schedule),
         "matchsheet_rows": len(matchsheet),
         "lineup_rows": len(lineup),
+        "events_rows": len(events),
         "bronze_base": bronze_base,
         "raw_bucket": raw_bucket,
         "elapsed_seconds": round(elapsed, 2),

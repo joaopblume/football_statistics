@@ -146,8 +146,11 @@ def brasileirao_gold_processing():
     # ------------------------------------------------------------------
     run_spark_gold = BashOperator(
         task_id="run_spark_gold",
+        env={
+            "SEASON": "{{ ti.xcom_pull(task_ids='get_season_and_mark_started')['season'] | string }}",
+        },
         bash_command=(
-            f"docker exec {SPARK_CONTAINER} "
+            f"docker exec -e SEASON=$SEASON {SPARK_CONTAINER} "
             f"jupyter nbconvert --to notebook --execute {NOTEBOOK_PATH} "
             "--output-dir /tmp "
             "--ExecutePreprocessor.timeout=1800 "

@@ -17,6 +17,7 @@ import pandas as pd
 
 from lib.extraction_helpers import (
     _build_enriched_lineup,
+    _enrich_events_with_game_id,
     _parse_clock_minute,
     _parse_substitution_data,
     build_queue_message,
@@ -530,3 +531,71 @@ class TestBuildEnrichedLineup:
         assert row["goal_assists"] == 1
         assert row["yellow_cards"] == 0
         assert row["athlete_id"] == 99
+
+
+# ---------------------------------------------------------------------------
+# Test: _enrich_events_with_game_id()
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichEventsWithGameId:
+
+    def _schedule(self, rows):
+        return pd.DataFrame(rows)
+
+    def _events(self, rows):
+        return pd.DataFrame(rows)
+
+    def test_game_id_added_from_schedule(self):
+        """game_id should be merged from the schedule on the game column."""
+        schedule = self._schedule([
+            {"game": "A - B", "game_id": 101},
+            {"game": "C - D", "game_id": 202},
+        ])
+        events = self._events([
+            {"game": "A - B", "event_type": "goal", "player": "Alpha"},
+            {"game": "C - D", "event_type": "yellow_card", "player": "Beta"},
+        ])
+        result = _enrich_events_with_game_id(schedule, events)
+        assert result[result["game"] == "A - B"].iloc[0]["game_id"] == 101
+        assert result[result["game"] == "C - D"].iloc[0]["game_id"] == 202
+
+    def test_multiple_events_same_game(self):
+        """Multiple events for the same game all get the correct game_id."""
+        schedule = self._schedule([{"game": "A - B", "game_id": 77}])
+        events = self._events([
+            {"game": "A - B", "event_type": "goal"},
+            {"game": "A - B", "event_type": "goal"},
+            {"game": "A - B", "event_type": "yellow_card"},
+        ])
+        result = _enrich_events_with_game_id(schedule, events)
+        assert (result["game_id"] == 77).all()
+
+    def test_fallback_when_schedule_missing_game_id_column(self):
+        """Returns events unchanged if schedule has no game_id column."""
+        schedule = self._schedule([{"game": "A - B"}])  # no game_id
+        events = self._events([{"game": "A - B", "event_type": "goal"}])
+        result = _enrich_events_with_game_id(schedule, events)
+        assert "game_id" not in result.columns
+        assert len(result) == 1
+
+    def test_fallback_when_events_missing_game_column(self):
+        """Returns events unchanged if events has no game column."""
+        schedule = self._schedule([{"game": "A - B", "game_id": 1}])
+        events = self._events([{"event_type": "goal", "player": "X"}])  # no game
+        result = _enrich_events_with_game_id(schedule, events)
+        assert "game_id" not in result.columns
+
+    def test_empty_events_returns_empty(self):
+        """An empty events DataFrame is returned as-is."""
+        schedule = self._schedule([{"game": "A - B", "game_id": 1}])
+        events = pd.DataFrame()
+        result = _enrich_events_with_game_id(schedule, events)
+        assert result.empty
+
+    def test_unmatched_game_gets_null_game_id(self):
+        """An event whose game is not in the schedule gets game_id=NaN."""
+        schedule = self._schedule([{"game": "A - B", "game_id": 1}])
+        events = self._events([{"game": "X - Y", "event_type": "goal"}])
+        result = _enrich_events_with_game_id(schedule, events)
+        assert pd.isna(result.iloc[0]["game_id"])

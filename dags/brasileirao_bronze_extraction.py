@@ -125,11 +125,12 @@ def brasileirao_bronze_extraction():
             raise
 
         LOGGER.info(
-            "Bronze extraction complete: season=%s schedule=%s matchsheet=%s lineup=%s (%.2fs)",
+            "Bronze extraction complete: season=%s schedule=%s matchsheet=%s lineup=%s events=%s (%.2fs)",
             season,
             result["schedule_rows"],
             result["matchsheet_rows"],
             result["lineup_rows"],
+            result["events_rows"],
             result["elapsed_seconds"],
         )
 
