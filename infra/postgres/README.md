@@ -44,6 +44,20 @@ psql -h localhost -U <user> -d <dbname> -f infra/postgres/migrations/001_pipelin
 | Arquivo | O que cria | Quando aplicar |
 |---|---|---|
 | `001_pipeline_season_control.sql` | Tabela `pipeline_season_control` + trigger `updated_at` + índice | Na primeira implantação da pipeline Lakehouse (Phase 1) |
+| `002_pipeline_quality_checks.sql` | Tabela `pipeline_quality_checks` para rastrear resultados de quality checks por season/stage | Após a migration 001 (Phase 6) |
+
+### Consultar qualidade de uma season
+
+```sql
+-- Todos os checks de uma season
+SELECT stage, check_name, status, details, checked_at
+FROM pipeline_quality_checks
+WHERE season_id = (
+    SELECT id FROM pipeline_season_control
+    WHERE league_key = 'BRA-Brasileirao' AND season = 2024
+)
+ORDER BY stage, checked_at DESC;
+```
 
 ### Adicionar uma nova season para processar
 

@@ -22,6 +22,7 @@ from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
+from lib.quality_helpers import record_stage_quality_passed
 from lib.season_helpers import (
     ensure_season_control_table,
     get_pending_season,
@@ -175,7 +176,20 @@ def brasileirao_gold_processing():
         )
 
     # ------------------------------------------------------------------
-    # Task 5: Stop Spark container (always runs, even on failure)
+    # Task 5: Record quality checks in PostgreSQL (only on success)
+    # ------------------------------------------------------------------
+    @task(task_id="record_gold_quality", trigger_rule=TriggerRule.ALL_SUCCESS)
+    def record_gold_quality(season_info: dict[str, Any]) -> None:
+        """Record all Gold quality checks as passed in pipeline_quality_checks."""
+        if not season_info or not season_info.get("season_id"):
+            return
+        record_stage_quality_passed(_get_conn, season_info["season_id"], stage="gold")
+        LOGGER.info(
+            "Gold quality checks recorded for season=%s", season_info.get("season")
+        )
+
+    # ------------------------------------------------------------------
+    # Task 6: Stop Spark container (always runs, even on failure)
     # ------------------------------------------------------------------
     stop_spark = BashOperator(
         task_id="stop_spark",
@@ -188,7 +202,9 @@ def brasileirao_gold_processing():
     # Wire dependencies
     # ------------------------------------------------------------------
     season_info = get_season_and_mark_started()
-    season_info >> start_spark >> run_spark_gold >> mark_gold_done(season_info) >> stop_spark
+    g_done = mark_gold_done(season_info)
+    g_quality = record_gold_quality(season_info)
+    season_info >> start_spark >> run_spark_gold >> g_done >> g_quality >> stop_spark
 
 
 # Instantiate the DAG
