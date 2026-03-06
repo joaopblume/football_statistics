@@ -334,6 +334,158 @@ def _extract_profile_url(athlete: dict[str, Any]) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# ESPN summary JSON cache constants (mirrors brasileirao_teams_to_pg.py)
+# ---------------------------------------------------------------------------
+
+# URL template for ESPN match summary API
+_ESPN_SUMMARY_URL_MASK = "http://site.api.espn.com/apis/site/v2/sports/soccer/{}/{}"
+# Filename template used by soccerdata when caching summary JSONs locally
+_ESPN_SUMMARY_FILE_MASK = "Summary_{}.json"
+
+
+# ---------------------------------------------------------------------------
+# Lineup enrichment: merge soccerdata stats with ESPN athlete IDs
+# ---------------------------------------------------------------------------
+
+def _build_enriched_lineup(
+    schedule: "pd.DataFrame",
+    sd_lineup: "pd.DataFrame",
+    reader,
+    league_key: str,
+    season: int,
+) -> "pd.DataFrame":
+    """Merge soccerdata lineup stats with ESPN athlete IDs from cached summary JSONs.
+
+    ``soccerdata``'s ``read_lineup()`` returns reliable numeric stats (goals,
+    assists, cards) but discards ESPN's ``athlete_id`` and ``game_id``.
+
+    This function reads the ESPN summary JSONs that were already cached to disk
+    by the preceding ``read_lineup()`` call, extracts ``athlete_id`` via
+    ``parse_lineup_with_ids()``, and left-joins the result onto the soccerdata
+    lineup using ``(game, player, team)`` as the merge key.
+
+    Rows from the soccerdata lineup that have no matching summary JSON are kept
+    with ``athlete_id = None`` and ``game_id = None`` (graceful fallback).
+
+    Parameters
+    ----------
+    schedule : pd.DataFrame
+        Schedule DataFrame (output of ``reader.read_schedule().reset_index()``).
+        Must contain ``game`` and ``game_id`` columns.
+    sd_lineup : pd.DataFrame
+        Soccerdata lineup (output of ``reader.read_lineup().reset_index()``).
+    reader : sd.ESPN
+        The soccerdata ESPN reader instance (used to access ``data_dir``
+        and the ``get()`` method for cached files).
+    league_key : str
+        Soccerdata league key, e.g. ``"BRA-Brasileirao"``.
+    season : int
+        Season year, e.g. ``2024``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Enriched lineup with ``athlete_id`` and ``game_id`` columns added.
+    """
+    from soccerdata import _config  # late import to avoid module-level side-effects
+
+    if "game_id" not in schedule.columns:
+        LOGGER.warning(
+            "_build_enriched_lineup: schedule has no 'game_id' column — "
+            "returning soccerdata lineup without athlete_id"
+        )
+        return sd_lineup
+
+    # ESPN internal league key (e.g. "bra.1") needed for the summary URL
+    espn_league_key = _config.LEAGUE_DICT.get(league_key, {}).get("ESPN", "bra.1")
+
+    custom_parts: list["pd.DataFrame"] = []
+    success = 0
+    fail = 0
+
+    for _, sched_row in schedule.iterrows():
+        game_id = int(sched_row["game_id"])
+        game_name = sched_row["game"]
+
+        # Load the summary JSON from soccerdata's local disk cache
+        try:
+            filepath = reader.data_dir / _ESPN_SUMMARY_FILE_MASK.format(game_id)
+            url = _ESPN_SUMMARY_URL_MASK.format(
+                espn_league_key, f"summary?event={game_id}"
+            )
+            summary_reader = reader.get(url, filepath)
+            data = json.load(summary_reader)
+        except Exception as exc:  # noqa: BLE001
+            fail += 1
+            LOGGER.warning(
+                "_build_enriched_lineup: failed to load summary for game_id=%s: %s",
+                game_id, exc,
+            )
+            continue
+
+        game_info = {
+            "game": game_name,
+            "game_id": game_id,
+            "league": league_key,
+            "season": season,
+        }
+
+        rosters = data.get("rosters", [])
+        for team_idx in range(2):
+            if team_idx >= len(rosters) or "roster" not in rosters[team_idx]:
+                continue
+            try:
+                team_name = (
+                    data["boxscore"]["form"][team_idx]["team"]["displayName"]
+                )
+            except (KeyError, IndexError):
+                continue
+
+            lineup_df = parse_lineup_with_ids(
+                roster_data=rosters[team_idx]["roster"],
+                game_info=game_info,
+                team_display_name=team_name,
+                is_home=(team_idx == 0),
+            )
+            if not lineup_df.empty:
+                custom_parts.append(lineup_df)
+
+        success += 1
+
+    LOGGER.info(
+        "_build_enriched_lineup: summaries loaded success=%s fail=%s",
+        success, fail,
+    )
+
+    if not custom_parts:
+        LOGGER.warning(
+            "_build_enriched_lineup: no custom lineup data — "
+            "returning soccerdata lineup without athlete_id"
+        )
+        return sd_lineup
+
+    # Only bring athlete_id and game_id from the custom side.
+    # All numeric stats (goals, assists, cards) come from the more reliable
+    # soccerdata lineup and are intentionally kept as-is.
+    custom_df = pd.concat(custom_parts, ignore_index=True)
+    merge_key = ["game", "player", "team"]
+    custom_slim = (
+        custom_df[merge_key + ["athlete_id", "game_id"]]
+        .drop_duplicates(subset=merge_key)
+    )
+
+    enriched = sd_lineup.merge(custom_slim, on=merge_key, how="left")
+
+    coverage = enriched["athlete_id"].notna().mean() * 100
+    LOGGER.info(
+        "_build_enriched_lineup: %s rows total, athlete_id coverage=%.1f%%",
+        len(enriched), coverage,
+    )
+
+    return enriched
+
+
+# ---------------------------------------------------------------------------
 # Bronze layer: Extract from ESPN and upload to MinIO
 # ---------------------------------------------------------------------------
 
@@ -395,9 +547,18 @@ def extract_and_upload_to_minio(
     LOGGER.info("read_matchsheet: %s rows in %.2fs", len(matchsheet), time.perf_counter() - t0)
 
     # --- Fetch lineup (player stats per match) ---
+    # read_lineup() fetches soccerdata stats AND caches ESPN summary JSONs to disk.
+    # _build_enriched_lineup() then reads those cached files to extract athlete_id,
+    # merging it back into the soccerdata lineup via (game, player, team).
     t0 = time.perf_counter()
-    lineup = reader.read_lineup().reset_index()
-    LOGGER.info("read_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - t0)
+    sd_lineup = reader.read_lineup().reset_index()
+    LOGGER.info("read_lineup: %s rows in %.2fs", len(sd_lineup), time.perf_counter() - t0)
+
+    t0 = time.perf_counter()
+    lineup = _build_enriched_lineup(schedule, sd_lineup, reader, league_key, season)
+    LOGGER.info(
+        "_build_enriched_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - t0
+    )
 
     # Convert DataFrames to JSON strings (records orientation, ISO dates)
     schedule_json = json.dumps(

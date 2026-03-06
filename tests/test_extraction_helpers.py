@@ -12,13 +12,17 @@ from pathlib import Path
 # Add the dags directory to the Python path for direct imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dags"))
 
+import io
+import pandas as pd
+
 from lib.extraction_helpers import (
+    _build_enriched_lineup,
+    _parse_clock_minute,
+    _parse_substitution_data,
     build_queue_message,
     fetch_player_profile,
     parse_lineup_with_ids,
     slug,
-    _parse_clock_minute,
-    _parse_substitution_data,
 )
 
 
@@ -335,3 +339,199 @@ class TestFetchPlayerProfile:
         )
 
         assert profile is None
+
+
+# ---------------------------------------------------------------------------
+# Test: _build_enriched_lineup()
+# ---------------------------------------------------------------------------
+
+def _make_schedule(*game_tuples):
+    """Build a minimal schedule DataFrame with (game, game_id) rows."""
+    return pd.DataFrame(game_tuples, columns=["game", "game_id"])
+
+
+def _make_sd_lineup(rows):
+    """Build a minimal soccerdata lineup DataFrame from a list of dicts."""
+    return pd.DataFrame(rows)
+
+
+def _make_reader(summaries: dict):
+    """Build a mock soccerdata ESPN reader.
+
+    summaries: dict mapping game_id (int) -> summary dict (as returned by ESPN API)
+    """
+    reader = MagicMock()
+    reader.data_dir = MagicMock()
+
+    def fake_get(url, filepath):
+        # Extract game_id from the URL (ends with ?event=<id>)
+        game_id = int(url.split("event=")[-1])
+        data = summaries.get(game_id)
+        if data is None:
+            raise FileNotFoundError(f"No summary for game_id={game_id}")
+        return io.StringIO(json.dumps(data))
+
+    reader.get.side_effect = fake_get
+    return reader
+
+
+def _minimal_summary(home_name: str, away_name: str, home_players, away_players):
+    """Build a minimal ESPN summary JSON structure."""
+    def _make_roster(players):
+        return [
+            {
+                "athlete": {"id": str(p["athlete_id"]), "displayName": p["name"]},
+                "position": {"name": p.get("position", "MF")},
+                "starter": p.get("starter", True),
+                "formationPlace": p.get("formation_place"),
+                "subbedIn": False,
+                "subbedOut": False,
+            }
+            for p in players
+        ]
+
+    return {
+        "boxscore": {
+            "form": [
+                {"team": {"displayName": home_name}},
+                {"team": {"displayName": away_name}},
+            ]
+        },
+        "rosters": [
+            {"roster": _make_roster(home_players)},
+            {"roster": _make_roster(away_players)},
+        ],
+    }
+
+
+class TestBuildEnrichedLineup:
+
+    def test_athlete_id_merged_into_soccerdata_lineup(self):
+        """athlete_id from the ESPN summary should appear in the enriched lineup."""
+        schedule = _make_schedule(("Palmeiras - Flamengo", 101))
+
+        sd_lineup = _make_sd_lineup([
+            {"game": "Palmeiras - Flamengo", "player": "Veiga",  "team": "Palmeiras", "total_goals": 1},
+            {"game": "Palmeiras - Flamengo", "player": "Arrascaeta", "team": "Flamengo", "total_goals": 0},
+        ])
+
+        summaries = {
+            101: _minimal_summary(
+                "Palmeiras", "Flamengo",
+                home_players=[{"athlete_id": 111, "name": "Veiga"}],
+                away_players=[{"athlete_id": 222, "name": "Arrascaeta"}],
+            )
+        }
+
+        with patch("lib.extraction_helpers._config") as mock_config:
+            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+            reader = _make_reader(summaries)
+            result = _build_enriched_lineup(
+                schedule, sd_lineup, reader, "BRA-Brasileirao", 2024
+            )
+
+        assert "athlete_id" in result.columns
+        veiga_row = result[result["player"] == "Veiga"].iloc[0]
+        assert veiga_row["athlete_id"] == 111
+        assert veiga_row["total_goals"] == 1  # soccerdata stats preserved
+
+        arra_row = result[result["player"] == "Arrascaeta"].iloc[0]
+        assert arra_row["athlete_id"] == 222
+
+    def test_game_id_merged_into_soccerdata_lineup(self):
+        """game_id should be added to every row."""
+        schedule = _make_schedule(("Team A - Team B", 999))
+        sd_lineup = _make_sd_lineup([
+            {"game": "Team A - Team B", "player": "Player1", "team": "Team A", "total_goals": 0},
+        ])
+        summaries = {
+            999: _minimal_summary(
+                "Team A", "Team B",
+                home_players=[{"athlete_id": 55, "name": "Player1"}],
+                away_players=[],
+            )
+        }
+
+        with patch("lib.extraction_helpers._config") as mock_config:
+            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+            result = _build_enriched_lineup(
+                schedule, sd_lineup, _make_reader(summaries), "BRA-Brasileirao", 2024
+            )
+
+        assert result.iloc[0]["game_id"] == 999
+
+    def test_fallback_when_no_game_id_column(self):
+        """If schedule has no game_id column, return soccerdata lineup unchanged."""
+        schedule = pd.DataFrame([{"game": "A - B"}])  # no game_id
+        sd_lineup = _make_sd_lineup([{"game": "A - B", "player": "X", "team": "A"}])
+
+        result = _build_enriched_lineup(
+            schedule, sd_lineup, MagicMock(), "BRA-Brasileirao", 2024
+        )
+
+        assert "athlete_id" not in result.columns
+        assert len(result) == 1
+
+    def test_fallback_when_summary_json_missing(self):
+        """If the ESPN summary JSON is not cached, the row is kept with athlete_id=None."""
+        schedule = _make_schedule(("X - Y", 404))
+        sd_lineup = _make_sd_lineup([
+            {"game": "X - Y", "player": "Someone", "team": "X", "total_goals": 0},
+        ])
+
+        with patch("lib.extraction_helpers._config") as mock_config:
+            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+            # No summaries for game_id 404 → FileNotFoundError
+            reader = _make_reader({})
+            result = _build_enriched_lineup(
+                schedule, sd_lineup, reader, "BRA-Brasileirao", 2024
+            )
+
+        # Should fall back to original sd_lineup when nothing was extracted
+        assert len(result) == len(sd_lineup)
+
+    def test_multiple_games_all_enriched(self):
+        """Multiple games in the schedule should all get athlete_ids."""
+        schedule = _make_schedule(("A - B", 1), ("C - D", 2))
+        sd_lineup = _make_sd_lineup([
+            {"game": "A - B", "player": "Alpha", "team": "A", "total_goals": 1},
+            {"game": "C - D", "player": "Delta", "team": "C", "total_goals": 0},
+        ])
+        summaries = {
+            1: _minimal_summary("A", "B", [{"athlete_id": 10, "name": "Alpha"}], []),
+            2: _minimal_summary("C", "D", [{"athlete_id": 20, "name": "Delta"}], []),
+        }
+
+        with patch("lib.extraction_helpers._config") as mock_config:
+            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+            result = _build_enriched_lineup(
+                schedule, sd_lineup, _make_reader(summaries), "BRA-Brasileirao", 2024
+            )
+
+        assert result[result["player"] == "Alpha"].iloc[0]["athlete_id"] == 10
+        assert result[result["player"] == "Delta"].iloc[0]["athlete_id"] == 20
+
+    def test_soccerdata_stats_not_overwritten(self):
+        """Numeric stats from soccerdata (total_goals etc.) must not be overwritten."""
+        schedule = _make_schedule(("X - Y", 77))
+        sd_lineup = _make_sd_lineup([
+            {
+                "game": "X - Y", "player": "Scorer", "team": "X",
+                "total_goals": 2, "goal_assists": 1, "yellow_cards": 0,
+            },
+        ])
+        summaries = {
+            77: _minimal_summary("X", "Y", [{"athlete_id": 99, "name": "Scorer"}], [])
+        }
+
+        with patch("lib.extraction_helpers._config") as mock_config:
+            mock_config.LEAGUE_DICT = {"BRA-Brasileirao": {"ESPN": "bra.1"}}
+            result = _build_enriched_lineup(
+                schedule, sd_lineup, _make_reader(summaries), "BRA-Brasileirao", 2024
+            )
+
+        row = result[result["player"] == "Scorer"].iloc[0]
+        assert row["total_goals"] == 2
+        assert row["goal_assists"] == 1
+        assert row["yellow_cards"] == 0
+        assert row["athlete_id"] == 99
