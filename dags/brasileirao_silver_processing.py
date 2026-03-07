@@ -1,10 +1,16 @@
-"""DAG: brasileirao_silver_processing -- Bronze (MinIO) to Silver (Iceberg).
+"""DAG: silver_processing -- Bronze (MinIO) to Silver (Iceberg).
 
-Triggered automatically via Dataset when the Bronze extraction finishes.
-Starts the Spark container, executes notebook to build dimensions and facts,
-and gracefully stops the container.
+Triggered automatically via Dataset when any Bronze extraction finishes.
+Processes the next available ``bronze_done`` season across ALL leagues
+(newest season first).
 
-The season to process is read from ``pipeline_season_control`` (status = bronze_done).
+Starts the Spark container, executes the Silver notebook, and gracefully
+stops the container.
+
+The season and league are read from ``pipeline_season_control``
+(status = bronze_done).  Both SEASON and LEAGUE_KEY are injected as env
+vars into the notebook.
+
 Status transitions: bronze_done → silver_running → silver_done (or failed).
 
 Produces dataset: iceberg://lake/analytics/silver
@@ -36,14 +42,13 @@ from lib.season_helpers import (
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
-LEAGUE_KEY = "BRA-Brasileirao"
 POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
 SPARK_CONTAINER = "jupyter-spark"
 NOTEBOOK_PATH = "/home/jovyan/work/spark_silver_processing.ipynb"
 
-# Datasets
-bronze_dataset = Dataset("minio://datalake-raw/espn/brasileirao/bronze")
+# Shared Dataset — triggered by any Bronze DAG (any league)
+bronze_dataset = Dataset("minio://datalake-raw/espn/bronze")
 silver_dataset = Dataset("iceberg://lake/analytics/silver")
 
 DEFAULT_ARGS = {
@@ -72,11 +77,7 @@ def _get_conn():
 # ---------------------------------------------------------------------------
 
 def _on_notebook_failure(context: dict) -> None:
-    """Mark the season as failed in pipeline_season_control.
-
-    Called automatically by Airflow when the run_spark_silver task fails.
-    Reads the season_id from the upstream get_season task via XCom.
-    """
+    """Mark the season as failed in pipeline_season_control."""
     season_info = context["ti"].xcom_pull(task_ids="get_season_and_mark_started")
     if not season_info or not season_info.get("season_id"):
         LOGGER.warning("_on_notebook_failure: no season_id in XCom, cannot mark failed")
@@ -85,8 +86,8 @@ def _on_notebook_failure(context: dict) -> None:
     error = str(context.get("exception", "Notebook execution failed"))
     mark_stage_failed(_get_conn, season_info["season_id"], stage="silver", error=error)
     LOGGER.error(
-        "Silver notebook failed for season=%s: %s",
-        season_info.get("season"), error[:200],
+        "Silver notebook failed for league=%s season=%s: %s",
+        season_info.get("league_key"), season_info.get("season"), error[:200],
     )
 
 
@@ -95,39 +96,44 @@ def _on_notebook_failure(context: dict) -> None:
 # ---------------------------------------------------------------------------
 
 @dag(
-    schedule=[bronze_dataset],  # Triggered when Bronze finishes
+    schedule=[bronze_dataset],  # Triggered when any Bronze DAG finishes
     start_date=pendulum.datetime(2024, 1, 1, tz="America/Sao_Paulo"),
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
-    tags=["lakehouse", "silver", "spark", "brasileirao"],
+    tags=["lakehouse", "silver", "spark", "multi-liga"],
     doc_md=__doc__,
 )
-def brasileirao_silver_processing():
+def silver_processing():
 
     # ------------------------------------------------------------------
-    # Task 1: Get the season to process and mark it as running
+    # Task 1: Get the next bronze_done season (any league) and mark started
     # ------------------------------------------------------------------
     @task(task_id="get_season_and_mark_started")
     def get_season_and_mark_started() -> dict[str, Any]:
-        """Query pipeline_season_control for a bronze_done season.
+        """Query pipeline_season_control for the next bronze_done season.
 
-        Returns {season_id, season} on success, or {} if nothing is ready.
-        Marks the row as silver_running before returning.
+        Picks the highest season number across ALL leagues (newest first).
+        Returns {season_id, season, league_key}, or {} if nothing is ready.
         """
         ensure_season_control_table(_get_conn)
 
-        season_row = get_pending_season(_get_conn, LEAGUE_KEY, stage="silver")
+        # league_key=None → search across all leagues
+        season_row = get_pending_season(_get_conn, None, stage="silver")
         if season_row is None:
-            LOGGER.info("No bronze_done season found for league=%s. Skipping.", LEAGUE_KEY)
+            LOGGER.info("No bronze_done season found across any league. Skipping.")
             return {}
 
         mark_stage_started(_get_conn, season_row["id"], stage="silver")
         LOGGER.info(
-            "Silver processing starting for league=%s season=%s (id=%s)",
-            LEAGUE_KEY, season_row["season"], season_row["id"],
+            "Silver starting: league=%s season=%s (id=%s)",
+            season_row["league_key"], season_row["season"], season_row["id"],
         )
-        return {"season_id": season_row["id"], "season": season_row["season"]}
+        return {
+            "season_id": season_row["id"],
+            "season": season_row["season"],
+            "league_key": season_row["league_key"],
+        }
 
     # ------------------------------------------------------------------
     # Task 2: Start Spark container
@@ -144,15 +150,16 @@ def brasileirao_silver_processing():
     )
 
     # ------------------------------------------------------------------
-    # Task 3: Execute Silver notebook
+    # Task 3: Execute Silver notebook (SEASON + LEAGUE_KEY injected)
     # ------------------------------------------------------------------
     run_spark_silver = BashOperator(
         task_id="run_spark_silver",
         env={
             "SEASON": "{{ ti.xcom_pull(task_ids='get_season_and_mark_started')['season'] | string }}",
+            "LEAGUE_KEY": "{{ ti.xcom_pull(task_ids='get_season_and_mark_started')['league_key'] }}",
         },
         bash_command=(
-            f"docker exec -e SEASON=$SEASON {SPARK_CONTAINER} "
+            f"docker exec -e SEASON=$SEASON -e LEAGUE_KEY=$LEAGUE_KEY {SPARK_CONTAINER} "
             f"jupyter nbconvert --to notebook --execute {NOTEBOOK_PATH} "
             "--output-dir /tmp "
             "--ExecutePreprocessor.timeout=1800 "
@@ -164,31 +171,33 @@ def brasileirao_silver_processing():
     )
 
     # ------------------------------------------------------------------
-    # Task 4: Mark season as silver_done (only runs on notebook success)
+    # Task 4: Mark season as silver_done
     # ------------------------------------------------------------------
     @task(task_id="mark_silver_done", trigger_rule=TriggerRule.ALL_SUCCESS)
     def mark_silver_done(season_info: dict[str, Any]) -> None:
-        """Mark the season as silver_done in pipeline_season_control."""
         if not season_info or not season_info.get("season_id"):
             return
         mark_stage_completed(_get_conn, season_info["season_id"], stage="silver")
-        LOGGER.info("Silver processing complete for season=%s", season_info.get("season"))
+        LOGGER.info(
+            "Silver complete: league=%s season=%s",
+            season_info.get("league_key"), season_info.get("season"),
+        )
 
     # ------------------------------------------------------------------
-    # Task 5: Record quality checks in PostgreSQL (only on success)
+    # Task 5: Record quality checks
     # ------------------------------------------------------------------
     @task(task_id="record_silver_quality", trigger_rule=TriggerRule.ALL_SUCCESS)
     def record_silver_quality(season_info: dict[str, Any]) -> None:
-        """Record all Silver quality checks as passed in pipeline_quality_checks."""
         if not season_info or not season_info.get("season_id"):
             return
         record_stage_quality_passed(_get_conn, season_info["season_id"], stage="silver")
         LOGGER.info(
-            "Silver quality checks recorded for season=%s", season_info.get("season")
+            "Silver quality recorded: league=%s season=%s",
+            season_info.get("league_key"), season_info.get("season"),
         )
 
     # ------------------------------------------------------------------
-    # Task 6: Stop Spark container (always runs, even on failure)
+    # Task 6: Stop Spark container (always runs)
     # ------------------------------------------------------------------
     stop_spark = BashOperator(
         task_id="stop_spark",
@@ -197,9 +206,7 @@ def brasileirao_silver_processing():
         execution_timeout=timedelta(minutes=2),
     )
 
-    # ------------------------------------------------------------------
     # Wire dependencies
-    # ------------------------------------------------------------------
     season_info = get_season_and_mark_started()
     s_done = mark_silver_done(season_info)
     s_quality = record_silver_quality(season_info)
@@ -207,4 +214,4 @@ def brasileirao_silver_processing():
 
 
 # Instantiate the DAG
-brasileirao_silver_processing()
+silver_processing()

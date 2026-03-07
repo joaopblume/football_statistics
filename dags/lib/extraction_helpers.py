@@ -28,21 +28,9 @@ DEFAULT_API_DELAY = 0.5
 # ---------------------------------------------------------------------------
 
 def ensure_brasileirao_mapping(league_key: str = "BRA-Brasileirao") -> None:
-    """Register the Brasileirao league in soccerdata's runtime config if absent.
-
-    This is needed because soccerdata does not ship with a built-in
-    mapping for the Brasileirao.  We inject it at runtime before
-    creating the ESPN reader.
-    """
-    from soccerdata import _config  # late import to avoid module-level side-effects
-
-    # Only add the mapping if it does not already exist
-    if league_key not in _config.LEAGUE_DICT:
-        _config.LEAGUE_DICT[league_key] = {
-            "ESPN": "bra.1",
-            "season_start": "Apr",
-            "season_end": "Dec",
-        }
+    """Backwards-compat alias — delegates to league_config.ensure_league_mapping."""
+    from lib.league_config import ensure_league_mapping
+    ensure_league_mapping(league_key)
 
 
 def slug(value: str) -> str:
@@ -564,9 +552,10 @@ def extract_schedule_to_minio(
         that downstream tasks use to correlate lineup/events with game IDs.
     """
     import soccerdata as sd
+    from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
-    ensure_brasileirao_mapping(league_key)
+    ensure_league_mapping(league_key)
     reader = sd.ESPN(leagues=league_key, seasons=season)
 
     schedule = reader.read_schedule().reset_index()
@@ -581,7 +570,7 @@ def extract_schedule_to_minio(
             if pd.notna(row.get("game_id"))
         }
 
-    bronze_base = f"espn/brasileirao/{season}"
+    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
     schedule_key = f"{bronze_base}/schedule.json"
     s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
     s3.put_object(Bucket=raw_bucket, Key=schedule_key, Body=_to_json_str(schedule))
@@ -614,16 +603,17 @@ def extract_matchsheet_to_minio(
         ``{matchsheet_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+    from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
-    ensure_brasileirao_mapping(league_key)
+    ensure_league_mapping(league_key)
     reader = sd.ESPN(leagues=league_key, seasons=season)
 
     matchsheet = reader.read_matchsheet().reset_index()
     matchsheet = matchsheet.drop(columns=["roster"], errors="ignore")
     LOGGER.info("read_matchsheet: %s rows in %.2fs", len(matchsheet), time.perf_counter() - t0)
 
-    bronze_base = f"espn/brasileirao/{season}"
+    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
     matchsheet_key = f"{bronze_base}/matchsheet.json"
     s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
     s3.put_object(Bucket=raw_bucket, Key=matchsheet_key, Body=_to_json_str(matchsheet))
@@ -661,9 +651,10 @@ def extract_lineup_to_minio(
         ``{lineup_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+    from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
-    ensure_brasileirao_mapping(league_key)
+    ensure_league_mapping(league_key)
     reader = sd.ESPN(leagues=league_key, seasons=season)
 
     sd_lineup = reader.read_lineup().reset_index()
@@ -679,7 +670,7 @@ def extract_lineup_to_minio(
     lineup = _build_enriched_lineup(schedule_slim, sd_lineup, reader, league_key, season)
     LOGGER.info("_build_enriched_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - te)
 
-    bronze_base = f"espn/brasileirao/{season}"
+    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
     lineup_key = f"{bronze_base}/lineup.json"
     s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
     s3.put_object(Bucket=raw_bucket, Key=lineup_key, Body=_to_json_str(lineup))
@@ -717,9 +708,10 @@ def extract_events_to_minio(
         ``{events_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+    from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
-    ensure_brasileirao_mapping(league_key)
+    ensure_league_mapping(league_key)
     reader = sd.ESPN(leagues=league_key, seasons=season)
 
     schedule_slim = pd.DataFrame(
@@ -734,7 +726,7 @@ def extract_events_to_minio(
         LOGGER.warning("read_events failed (non-fatal): %s — events.json will be empty", exc)
         events = pd.DataFrame()
 
-    bronze_base = f"espn/brasileirao/{season}"
+    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
     events_key = f"{bronze_base}/events.json"
     s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
     s3.put_object(Bucket=raw_bucket, Key=events_key, Body=_to_json_str(events))

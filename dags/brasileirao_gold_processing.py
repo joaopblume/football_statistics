@@ -1,10 +1,12 @@
-"""DAG: brasileirao_gold_processing -- Silver (Iceberg) to Gold (Iceberg).
+"""DAG: gold_processing -- Silver (Iceberg) to Gold (Iceberg).
 
 Triggered automatically via Dataset when the Silver processing finishes.
-Starts the Spark container, executes notebook to build season aggregations,
-and gracefully stops the container.
+Processes the next available ``silver_done`` season across ALL leagues
+(newest season first).
 
-The season to process is read from ``pipeline_season_control`` (status = silver_done).
+Starts the Spark container, executes the Gold notebook, and gracefully
+stops the container.  Both SEASON and LEAGUE_KEY are injected as env vars.
+
 Status transitions: silver_done → gold_running → complete (or failed).
 
 Produces dataset: iceberg://lake/analytics/gold
@@ -36,7 +38,6 @@ from lib.season_helpers import (
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
-LEAGUE_KEY = "BRA-Brasileirao"
 POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
 SPARK_CONTAINER = "jupyter-spark"
@@ -71,11 +72,7 @@ def _get_conn():
 # ---------------------------------------------------------------------------
 
 def _on_notebook_failure(context: dict) -> None:
-    """Mark the season as failed in pipeline_season_control.
-
-    Called automatically by Airflow when the run_spark_gold task fails.
-    Reads the season_id from the upstream get_season task via XCom.
-    """
+    """Mark the season as failed in pipeline_season_control."""
     season_info = context["ti"].xcom_pull(task_ids="get_season_and_mark_started")
     if not season_info or not season_info.get("season_id"):
         LOGGER.warning("_on_notebook_failure: no season_id in XCom, cannot mark failed")
@@ -84,8 +81,8 @@ def _on_notebook_failure(context: dict) -> None:
     error = str(context.get("exception", "Notebook execution failed"))
     mark_stage_failed(_get_conn, season_info["season_id"], stage="gold", error=error)
     LOGGER.error(
-        "Gold notebook failed for season=%s: %s",
-        season_info.get("season"), error[:200],
+        "Gold notebook failed for league=%s season=%s: %s",
+        season_info.get("league_key"), season_info.get("season"), error[:200],
     )
 
 
@@ -99,34 +96,38 @@ def _on_notebook_failure(context: dict) -> None:
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
-    tags=["lakehouse", "gold", "spark", "brasileirao"],
+    tags=["lakehouse", "gold", "spark", "multi-liga"],
     doc_md=__doc__,
 )
-def brasileirao_gold_processing():
+def gold_processing():
 
     # ------------------------------------------------------------------
-    # Task 1: Get the season to process and mark it as running
+    # Task 1: Get the next silver_done season (any league) and mark started
     # ------------------------------------------------------------------
     @task(task_id="get_season_and_mark_started")
     def get_season_and_mark_started() -> dict[str, Any]:
-        """Query pipeline_season_control for a silver_done season.
+        """Query pipeline_season_control for the next silver_done season.
 
-        Returns {season_id, season} on success, or {} if nothing is ready.
-        Marks the row as gold_running before returning.
+        Picks the highest season number across ALL leagues (newest first).
+        Returns {season_id, season, league_key}, or {} if nothing is ready.
         """
         ensure_season_control_table(_get_conn)
 
-        season_row = get_pending_season(_get_conn, LEAGUE_KEY, stage="gold")
+        season_row = get_pending_season(_get_conn, None, stage="gold")
         if season_row is None:
-            LOGGER.info("No silver_done season found for league=%s. Skipping.", LEAGUE_KEY)
+            LOGGER.info("No silver_done season found across any league. Skipping.")
             return {}
 
         mark_stage_started(_get_conn, season_row["id"], stage="gold")
         LOGGER.info(
-            "Gold processing starting for league=%s season=%s (id=%s)",
-            LEAGUE_KEY, season_row["season"], season_row["id"],
+            "Gold starting: league=%s season=%s (id=%s)",
+            season_row["league_key"], season_row["season"], season_row["id"],
         )
-        return {"season_id": season_row["id"], "season": season_row["season"]}
+        return {
+            "season_id": season_row["id"],
+            "season": season_row["season"],
+            "league_key": season_row["league_key"],
+        }
 
     # ------------------------------------------------------------------
     # Task 2: Start Spark container
@@ -143,15 +144,16 @@ def brasileirao_gold_processing():
     )
 
     # ------------------------------------------------------------------
-    # Task 3: Execute Gold notebook
+    # Task 3: Execute Gold notebook (SEASON + LEAGUE_KEY injected)
     # ------------------------------------------------------------------
     run_spark_gold = BashOperator(
         task_id="run_spark_gold",
         env={
             "SEASON": "{{ ti.xcom_pull(task_ids='get_season_and_mark_started')['season'] | string }}",
+            "LEAGUE_KEY": "{{ ti.xcom_pull(task_ids='get_season_and_mark_started')['league_key'] }}",
         },
         bash_command=(
-            f"docker exec -e SEASON=$SEASON {SPARK_CONTAINER} "
+            f"docker exec -e SEASON=$SEASON -e LEAGUE_KEY=$LEAGUE_KEY {SPARK_CONTAINER} "
             f"jupyter nbconvert --to notebook --execute {NOTEBOOK_PATH} "
             "--output-dir /tmp "
             "--ExecutePreprocessor.timeout=1800 "
@@ -163,33 +165,33 @@ def brasileirao_gold_processing():
     )
 
     # ------------------------------------------------------------------
-    # Task 4: Mark season as complete (only runs on notebook success)
+    # Task 4: Mark season as complete
     # ------------------------------------------------------------------
     @task(task_id="mark_gold_done", trigger_rule=TriggerRule.ALL_SUCCESS)
     def mark_gold_done(season_info: dict[str, Any]) -> None:
-        """Mark the season as complete in pipeline_season_control."""
         if not season_info or not season_info.get("season_id"):
             return
         mark_stage_completed(_get_conn, season_info["season_id"], stage="gold")
         LOGGER.info(
-            "Pipeline complete for season=%s — status → complete", season_info.get("season")
+            "Pipeline complete: league=%s season=%s",
+            season_info.get("league_key"), season_info.get("season"),
         )
 
     # ------------------------------------------------------------------
-    # Task 5: Record quality checks in PostgreSQL (only on success)
+    # Task 5: Record quality checks
     # ------------------------------------------------------------------
     @task(task_id="record_gold_quality", trigger_rule=TriggerRule.ALL_SUCCESS)
     def record_gold_quality(season_info: dict[str, Any]) -> None:
-        """Record all Gold quality checks as passed in pipeline_quality_checks."""
         if not season_info or not season_info.get("season_id"):
             return
         record_stage_quality_passed(_get_conn, season_info["season_id"], stage="gold")
         LOGGER.info(
-            "Gold quality checks recorded for season=%s", season_info.get("season")
+            "Gold quality recorded: league=%s season=%s",
+            season_info.get("league_key"), season_info.get("season"),
         )
 
     # ------------------------------------------------------------------
-    # Task 6: Stop Spark container (always runs, even on failure)
+    # Task 6: Stop Spark container (always runs)
     # ------------------------------------------------------------------
     stop_spark = BashOperator(
         task_id="stop_spark",
@@ -198,9 +200,7 @@ def brasileirao_gold_processing():
         execution_timeout=timedelta(minutes=2),
     )
 
-    # ------------------------------------------------------------------
     # Wire dependencies
-    # ------------------------------------------------------------------
     season_info = get_season_and_mark_started()
     g_done = mark_gold_done(season_info)
     g_quality = record_gold_quality(season_info)
@@ -208,4 +208,4 @@ def brasileirao_gold_processing():
 
 
 # Instantiate the DAG
-brasileirao_gold_processing()
+gold_processing()

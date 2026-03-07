@@ -106,7 +106,7 @@ def ensure_season_control_table(get_conn_fn) -> None:
 
 def get_pending_season(
     get_conn_fn,
-    league_key: str,
+    league_key: str | None,
     stage: str,
 ) -> dict[str, Any] | None:
     """Return the next season row eligible to be processed at *stage*.
@@ -116,15 +116,17 @@ def get_pending_season(
       silver → status = 'bronze_done'       OR (status = 'failed' AND last_error_stage = 'silver')
       gold   → status = 'silver_done'       OR (status = 'failed' AND last_error_stage = 'gold')
 
-    Returns the lowest season number that qualifies (ORDER BY season ASC),
-    or None if no eligible row exists.
+    Returns the highest season number that qualifies (ORDER BY season DESC),
+    so that the most recent season is processed first.
+    Returns None if no eligible row exists.
 
     Parameters
     ----------
     get_conn_fn : callable
         Zero-argument function returning a psycopg2 connection.
-    league_key : str
+    league_key : str or None
         League identifier, e.g. 'BRA-Brasileirao'.
+        Pass None to pick the next eligible season across ALL leagues.
     stage : str
         One of 'bronze', 'silver', 'gold'.
     """
@@ -133,29 +135,37 @@ def get_pending_season(
 
     prerequisite_status = _STAGE_PREREQUISITE[stage]
 
+    # Build optional league filter
+    league_clause = "AND league_key = %s" if league_key is not None else ""
+    params: list = []
+    if league_key is not None:
+        params.append(league_key)
+    params.extend([prerequisite_status, stage])
+
     conn = get_conn_fn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT id, league_key, season, status
                 FROM pipeline_season_control
-                WHERE league_key = %s
+                WHERE 1=1
+                  {league_clause}
                   AND (
                       status = %s
                       OR (status = 'failed' AND last_error_stage = %s)
                   )
-                ORDER BY season ASC
+                ORDER BY season DESC
                 LIMIT 1
                 """,
-                (league_key, prerequisite_status, stage),
+                params,
             )
             row = cur.fetchone()
 
         if row is None:
             LOGGER.info(
                 "get_pending_season: no eligible season for stage=%s league=%s",
-                stage, league_key,
+                stage, league_key or "ANY",
             )
             return None
 
@@ -166,8 +176,8 @@ def get_pending_season(
             "status": row[3],
         }
         LOGGER.info(
-            "get_pending_season: found season=%s (id=%s status=%s) for stage=%s",
-            result["season"], result["id"], result["status"], stage,
+            "get_pending_season: found season=%s league=%s (id=%s status=%s) for stage=%s",
+            result["season"], result["league_key"], result["id"], result["status"], stage,
         )
         return result
     finally:
