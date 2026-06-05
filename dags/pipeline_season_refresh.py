@@ -10,17 +10,15 @@ currently mid-pipeline — so it is safe to run alongside the extraction DAGs.
 """
 
 import logging
-import os
 from datetime import timedelta
 
 import pendulum
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 
+from lib.airflow_common import get_pg_conn
 from lib.season_helpers import requeue_latest_complete_seasons
 
 LOGGER = logging.getLogger(__name__)
-POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
 DEFAULT_ARGS = {
     "owner": "data-team",
@@ -29,12 +27,7 @@ DEFAULT_ARGS = {
     "execution_timeout": timedelta(minutes=10),
 }
 
-
-def _get_conn():
-    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    conn = hook.get_conn()
-    conn.autocommit = False
-    return conn
+_get_conn = get_pg_conn
 
 
 @dag(

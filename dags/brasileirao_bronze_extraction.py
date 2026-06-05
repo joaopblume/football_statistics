@@ -17,7 +17,6 @@ Produces dataset: minio://datalake-raw/espn/bronze  (shared across all leagues)
 """
 
 import logging
-import os
 import re
 from datetime import timedelta
 from typing import Any
@@ -25,10 +24,10 @@ from typing import Any
 import pendulum
 from airflow.datasets import Dataset
 from airflow.exceptions import AirflowSkipException
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
+from lib.airflow_common import get_pg_conn
 from lib.extraction_helpers import (
     extract_events_to_minio,
     extract_lineup_to_minio,
@@ -48,7 +47,6 @@ from lib.season_helpers import (
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
-POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
 # MinIO credentials are resolved at task runtime from the environment via
 # get_minio_settings() — there are no hardcoded secret defaults in code.
@@ -71,11 +69,7 @@ DEFAULT_ARGS = {
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _get_conn():
-    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    conn = hook.get_conn()
-    conn.autocommit = False
-    return conn
+_get_conn = get_pg_conn
 
 
 def _minio_kwargs() -> dict:

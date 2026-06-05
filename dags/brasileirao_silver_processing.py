@@ -25,52 +25,31 @@ from typing import Any
 import pendulum
 from airflow.datasets import Dataset
 from airflow.exceptions import AirflowSkipException
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
+from lib.airflow_common import (
+    SPARK_CONTAINER,
+    SPARK_POOL,
+    SPARK_READINESS_CMD,
+    get_pg_conn,
+    notebook_failure_callback,
+)
 from lib.league_config import get_league_slug
 from lib.minio_config import get_minio_settings, make_s3_client
 from lib.quality_helpers import record_quality_check, record_quality_report
-from lib.season_helpers import (
-    claim_next_season,
-    mark_stage_completed,
-    mark_stage_failed,
-)
+from lib.season_helpers import claim_next_season, mark_stage_completed
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
-POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
-SPARK_CONTAINER = "jupyter-spark"
 NOTEBOOK_PATH = "/home/jovyan/work/spark_silver_processing.ipynb"
-
-# Size-1 Airflow pool shared by Silver + Gold notebook tasks. Because both DAGs
-# drive the SAME jupyter-spark container, this serializes notebook execution so
-# one run cannot start (or stop) the container while another is mid-flight.
-# Create it once:  airflow pools set spark_notebook 1 "Serialize Spark notebooks"
-# (or: make airflow-setup-pools)
-SPARK_POOL = "spark_notebook"
-
 # Bucket where the Silver notebook writes its quality report JSON
 WAREHOUSE_BUCKET = os.getenv("MINIO_WAREHOUSE_BUCKET", "datalake-warehouse")
-
-# Poll the Spark container until pyspark imports, instead of a fixed sleep.
-_SPARK_READINESS_CMD = (
-    f"docker start {SPARK_CONTAINER} && "
-    "echo 'Waiting for Spark container to become ready...' && "
-    "for i in $(seq 1 30); do "
-    f"  if docker exec {SPARK_CONTAINER} python -c 'import pyspark' 2>/dev/null; then "
-    "    echo \"Spark container ready after ${i} attempt(s)\"; exit 0; "
-    "  fi; "
-    "  sleep 2; "
-    "done; "
-    "echo 'Spark container did not become ready within 60s' >&2; exit 1"
-)
 
 # Shared Dataset — triggered by any Bronze DAG (any league)
 bronze_dataset = Dataset("minio://datalake-raw/espn/bronze")
@@ -85,35 +64,9 @@ DEFAULT_ARGS = {
     "execution_timeout": timedelta(hours=3),
 }
 
-
-# ---------------------------------------------------------------------------
-# Connection helper
-# ---------------------------------------------------------------------------
-
-def _get_conn():
-    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    conn = hook.get_conn()
-    conn.autocommit = False
-    return conn
-
-
-# ---------------------------------------------------------------------------
-# Failure callback for the notebook BashOperator
-# ---------------------------------------------------------------------------
-
-def _on_notebook_failure(context: dict) -> None:
-    """Mark the season as failed in pipeline_season_control."""
-    season_info = context["ti"].xcom_pull(task_ids="get_season_and_mark_started")
-    if not season_info or not season_info.get("season_id"):
-        LOGGER.warning("_on_notebook_failure: no season_id in XCom, cannot mark failed")
-        return
-
-    error = str(context.get("exception", "Notebook execution failed"))
-    mark_stage_failed(_get_conn, season_info["season_id"], stage="silver", error=error)
-    LOGGER.error(
-        "Silver notebook failed for league=%s season=%s: %s",
-        season_info.get("league_key"), season_info.get("season"), error[:200],
-    )
+# Connection + notebook-failure callback come from lib.airflow_common.
+_get_conn = get_pg_conn
+_on_notebook_failure = notebook_failure_callback("silver")
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +116,7 @@ def silver_processing():
     # ------------------------------------------------------------------
     start_spark = BashOperator(
         task_id="start_spark",
-        bash_command=_SPARK_READINESS_CMD,
+        bash_command=SPARK_READINESS_CMD,
         pool=SPARK_POOL,
         execution_timeout=timedelta(minutes=2),
     )
