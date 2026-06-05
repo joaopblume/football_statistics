@@ -35,6 +35,7 @@ from lib.airflow_common import (
     SPARK_READINESS_CMD,
     get_pg_conn,
     notebook_failure_callback,
+    pipeline_failure_notifier,
 )
 from lib.league_config import get_league_slug
 from lib.minio_config import get_minio_settings, make_s3_client
@@ -79,6 +80,7 @@ _on_notebook_failure = notebook_failure_callback("silver")
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
+    on_failure_callback=pipeline_failure_notifier,
     tags=["lakehouse", "silver", "spark", "multi-liga"],
     doc_md=__doc__,
 )

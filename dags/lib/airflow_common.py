@@ -41,6 +41,35 @@ def get_pg_conn():
     return conn
 
 
+def pipeline_failure_notifier(context: dict) -> None:
+    """DAG-level ``on_failure_callback``: log a structured alert and POST it to a
+    webhook (Slack/Discord-compatible ``{"text": ...}``) if ``ALERT_WEBHOOK_URL``
+    is set. No-ops gracefully (just logs) when no webhook is configured.
+    """
+    dag = context.get("dag")
+    dag_id = getattr(dag, "dag_id", "?")
+    run_id = context.get("run_id") or getattr(context.get("dag_run"), "run_id", "?")
+    reason = str(context.get("reason", "DAG run failed"))
+    message = f":rotating_light: Pipeline DAG failed: {dag_id} (run {run_id}) — {reason}"
+    LOGGER.error(message)
+
+    url = os.getenv("ALERT_WEBHOOK_URL")
+    if not url:
+        return
+    try:
+        import json
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"text": message}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=10)  # noqa: S310
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("pipeline_failure_notifier: webhook post failed: %s", exc)
+
+
 def notebook_failure_callback(stage: str):
     """Build an ``on_failure_callback`` that marks the season failed for *stage*.
 

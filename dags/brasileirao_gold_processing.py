@@ -29,6 +29,7 @@ from lib.airflow_common import (
     SPARK_READINESS_CMD,
     get_pg_conn,
     notebook_failure_callback,
+    pipeline_failure_notifier,
 )
 from lib.quality_helpers import record_stage_quality_passed
 from lib.season_helpers import claim_next_season, mark_stage_completed
@@ -68,6 +69,7 @@ _on_notebook_failure = notebook_failure_callback("gold")
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
+    on_failure_callback=pipeline_failure_notifier,
     tags=["lakehouse", "gold", "spark", "multi-liga"],
     doc_md=__doc__,
 )

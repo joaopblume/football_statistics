@@ -27,7 +27,7 @@ from airflow.exceptions import AirflowSkipException
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
-from lib.airflow_common import get_pg_conn
+from lib.airflow_common import get_pg_conn, pipeline_failure_notifier
 from lib.extraction_helpers import (
     extract_events_to_minio,
     extract_lineup_to_minio,
@@ -117,6 +117,7 @@ def _create_bronze_dag(league_key: str):
         catchup=False,
         max_active_runs=1,
         default_args=DEFAULT_ARGS,
+        on_failure_callback=pipeline_failure_notifier,
         tags=["lakehouse", "bronze", "multi-liga", league_key.lower().replace(" ", "-")],
         doc_md=f"Bronze extraction for **{league_key}**.\n\n{__doc__}",
     )
