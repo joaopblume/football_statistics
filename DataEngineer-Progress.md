@@ -31,7 +31,7 @@ Running the real Airflow DAGs end-to-end (per user request) surfaced bugs that u
 - [x] **V3 — cross-year European season encoding** → soccerdata tags ENG/ITA/FRA seasons as e.g. `2627` for a `2026` request; Gold's `season==SEASON` filter then returned 0 rows. Normalize `season` to the pipeline `SEASON` in Silver. _commit: 9c40c4c._
 - [x] **Notebook structure repair** — my iterative cell edits had duplicated the Silver write cell and dropped the quality-gate cell; restored from the C1 commit and re-applied the align fix cleanly.
 
-**Verified live:** Silver DAG end-to-end for `ITA-Serie A 2026` (spaced key, into tables already holding BRA+ENG partitions) → `state=success`, 11 measured quality rows in Postgres. Gold for `ITA-Serie A 2026` → `player_season_stats` 766 rows. Cross-league `drop→BRA→ENG→BRA` all exit 0. Bronze → _(in progress)_.
+**Verified live (all three pipelines, both league types):** a clean deterministic run drove `ITA-Serie A 2026` (cross-year) **and** `BRA-Brasileirao 2024` (calendar-year) through Bronze→Silver→Gold — all 6 DAG runs `exit 0`; both leagues coexist in the shared Iceberg tables; 11 measured quality rows recorded per Silver run; Gold `player_season_stats` 766/879 rows. Cross-league `drop→BRA→ENG→BRA` writes all pass.
 
 ---
 
