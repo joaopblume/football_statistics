@@ -50,8 +50,28 @@ POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 SPARK_CONTAINER = "jupyter-spark"
 NOTEBOOK_PATH = "/home/jovyan/work/spark_silver_processing.ipynb"
 
+# Size-1 Airflow pool shared by Silver + Gold notebook tasks. Because both DAGs
+# drive the SAME jupyter-spark container, this serializes notebook execution so
+# one run cannot start (or stop) the container while another is mid-flight.
+# Create it once:  airflow pools set spark_notebook 1 "Serialize Spark notebooks"
+# (or: make airflow-setup-pools)
+SPARK_POOL = "spark_notebook"
+
 # Bucket where the Silver notebook writes its quality report JSON
 WAREHOUSE_BUCKET = os.getenv("MINIO_WAREHOUSE_BUCKET", "datalake-warehouse")
+
+# Poll the Spark container until pyspark imports, instead of a fixed sleep.
+_SPARK_READINESS_CMD = (
+    f"docker start {SPARK_CONTAINER} && "
+    "echo 'Waiting for Spark container to become ready...' && "
+    "for i in $(seq 1 30); do "
+    f"  if docker exec {SPARK_CONTAINER} python -c 'import pyspark' 2>/dev/null; then "
+    "    echo \"Spark container ready after ${i} attempt(s)\"; exit 0; "
+    "  fi; "
+    "  sleep 2; "
+    "done; "
+    "echo 'Spark container did not become ready within 60s' >&2; exit 1"
+)
 
 # Shared Dataset — triggered by any Bronze DAG (any league)
 bronze_dataset = Dataset("minio://datalake-raw/espn/bronze")
@@ -146,12 +166,8 @@ def silver_processing():
     # ------------------------------------------------------------------
     start_spark = BashOperator(
         task_id="start_spark",
-        bash_command=(
-            f"docker start {SPARK_CONTAINER} && "
-            "echo 'Waiting for Spark container...' && "
-            "sleep 10 && "
-            f"docker exec {SPARK_CONTAINER} python -c 'print(\"Container ready\")'"
-        ),
+        bash_command=_SPARK_READINESS_CMD,
+        pool=SPARK_POOL,
         execution_timeout=timedelta(minutes=2),
     )
 
@@ -174,6 +190,7 @@ def silver_processing():
         execution_timeout=timedelta(hours=1),
         outlets=[silver_dataset],
         on_failure_callback=_on_notebook_failure,
+        pool=SPARK_POOL,
     )
 
     # ------------------------------------------------------------------
@@ -238,6 +255,7 @@ def silver_processing():
         bash_command=f"docker stop {SPARK_CONTAINER}",
         trigger_rule=TriggerRule.ALL_DONE,
         execution_timeout=timedelta(minutes=2),
+        pool=SPARK_POOL,
     )
 
     # Wire dependencies

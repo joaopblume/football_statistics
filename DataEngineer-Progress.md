@@ -53,11 +53,11 @@ _Last updated: Wave 1 (Critical) complete — C1, C2, L4, L6 done; 80 tests pass
 
 ## Wave 2 — 🟠 High
 
-- [ ] **H1 — Fragile Spark execution (incremental fix)**
-  - [ ] Replace `sleep 10` with a readiness-poll loop (+ timeout) in `start_spark` (silver + gold).
-  - [ ] Add an Airflow **Pool** (size 1) on `run_spark_silver` + `run_spark_gold` to serialize the shared container across DAGs.
-  - [ ] `[>]` Full `.py` + `spark-submit` conversion → **Deferred**.
-  - _Resolution:_ _(pending)_ · _commit:_ —
+- [x] **H1 — Fragile Spark execution (incremental fix)**
+  - [x] Replaced `sleep 10` with a `pyspark`-import readiness poll (30×2s, fail at 60s) in `start_spark` (silver + gold).
+  - [x] Added size-1 pool `spark_notebook` on **all three** container tasks (`start_spark`/`run_spark_*`/`stop_spark`) in both DAGs so neither run can start/stop the shared container while the other is mid-flight. Pool created live; `make airflow-setup-pools` provisions it.
+  - [>] Full `.py` + `spark-submit` (ephemeral per-run containers) → **Deferred** (closes the residual start/stop window entirely).
+  - _Resolution:_ readiness poll + cross-DAG size-1 pool. DAGs compile; pool created; 80 tests pass. · _commit: (next)_
 - [ ] **H2 — Retire the queue→Postgres path**
   - [ ] Delete `dags/brasileirao_teams_to_pg.py`, `dags/consume_brasileirao_queue_to_pg.py`, `dags/lib/ingestion_helpers.py`.
   - [ ] Remove now-dead helpers from `extraction_helpers.py` (`build_queue_message`, `fetch_player_profile`+`_extract_profile_url`, `write_csv`, `write_json`, `slug`, `ensure_brasileirao_mapping`, `ESPN_ATHLETE_API`); keep Bronze-used parsers.
