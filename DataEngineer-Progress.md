@@ -130,11 +130,23 @@ New `infra/observability/` stack: `docker-compose.yaml` (otel-collector + promet
 
 ---
 
-## Deferred backlog (tracked, not in this pass)
+## Backlog completion (second pass — all verified live)
 
-- [>] **H1-full** Notebooks → parameterized `.py` jobs via `spark-submit`/operator.
-- [>] **M5** Re-key `players` dimension on `athlete_id`; carry into facts.
-- [>] **§8** SCD-2 on `players`/`teams`; surrogate keys.
-- [>] **§4-live** Stand up + validate the monitoring stack against live Airflow/Spark.
-- [>] **Stretch** OpenLineage → Marquez (column-level lineage).
-- [>] **Stretch** Data-quality framework migration (Great Expectations / Soda Core).
+- [x] **H1-full** — Notebooks → `.py` Spark jobs (`spark_jobs/`) run as **ephemeral
+  `docker run` containers** via a unified DAG factory (`dags/spark_stage_dag.py`);
+  custom `football-spark` image (baked Iceberg jars + GE). Verified end-to-end. _5cad7b7._
+- [x] **M5** — `athlete_id` surrogate keys in `players` + Gold (100% coverage, BRA 2024). _0744f46._
+- [x] **§4-live** — Observability stack **up** (Grafana/Prometheus/otel/exporters);
+  MinIO + otel targets green; Spark event logs → History Server. _(Postgres dashboard +
+  Airflow metrics need 2 host commands — see below.)_ _07ffcf0/923a8a0._
+- [x] **Great Expectations** — declarative suites validate the Silver DataFrames in-job,
+  gating promotion + recorded to `pipeline_quality_checks`. _70d4592._
+- [x] **OpenLineage (lightweight)** — provider emitting run/job/dataset events
+  (`namespace=football_pipeline`); Marquez intentionally skipped. _fb339b3._
+
+### Still deferred (by decision / classifier)
+- [>] **§8 SCD-2** + full star schema (you chose surrogate-keys-now, SCD-2-later).
+- [>] **OpenLineage → Marquez** UI (you chose lightweight, no Marquez).
+- [>] **GE Data Docs → MinIO** (the GE *validation* is live; browsable Data Docs is a small follow-up).
+- [>] **4.E** per-run snapshot-summary deltas → `pipeline_quality_checks` (maintenance DAG already logs file/snapshot counts).
+- **Host commands needing your run** (classifier-gated): enable Postgres-from-Docker; apply Airflow OTel env + restart; drop orphaned `raw_*` tables. (Commands in the final report.)
