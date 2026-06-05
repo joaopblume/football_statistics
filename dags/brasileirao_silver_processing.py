@@ -33,7 +33,6 @@ from lib.league_config import get_league_slug
 from lib.minio_config import get_minio_settings, make_s3_client
 from lib.quality_helpers import record_quality_check, record_quality_report
 from lib.season_helpers import (
-    ensure_season_control_table,
     get_pending_season,
     mark_stage_completed,
     mark_stage_failed,
@@ -142,8 +141,7 @@ def silver_processing():
         Picks the highest season number across ALL leagues (newest first).
         Returns {season_id, season, league_key}, or {} if nothing is ready.
         """
-        ensure_season_control_table(_get_conn)
-
+        # Table is provisioned by migration 001 (no runtime DDL).
         # league_key=None → search across all leagues
         season_row = get_pending_season(_get_conn, None, stage="silver")
         if season_row is None:

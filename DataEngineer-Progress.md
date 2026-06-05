@@ -12,14 +12,14 @@
 |---|---|---|---|
 | 0 | Setup | 3 | 3 |
 | 1 | 🔴 Critical | 2 | 2 ✅ |
-| 2 | 🟠 High | 0 | 3 |
+| 2 | 🟠 High | 3 | 3 ✅ |
 | 3 | 🟡 Medium | 0 | 6 |
 | 4 | 🟢 Low / hygiene | 0 | 10 |
 | 5 | 📈 Observability (§4 / C3) | 0 | 6 |
 | 6 | Wrap-up | 0 | 1 |
 | — | Deferred (tracked) | — | 6 |
 
-_Last updated: Wave 1 (Critical) complete — C1, C2, L4, L6 done; 80 tests passing._
+_Last updated: Wave 2 (High) complete — H1, H2, H3 done. Surface area now Bronze→Silver→Gold only; 70 tests passing (10 dead tests removed in H2)._
 
 ---
 
@@ -65,10 +65,10 @@ _Last updated: Wave 1 (Critical) complete — C1, C2, L4, L6 done; 80 tests pass
   - [x] Updated `dags/README.md` (Medallion + "queue aposentada" note) + `infra/postgres/README.md` (003 row accuracy).
   - _Note:_ orphaned live tables (`raw_soccerdata_*`, `raw_ingestion_events`) can be dropped manually if desired — left untouched.
   - _Resolution:_ queue lineage gone; ruff clean; 80 → 70 tests (10 dead tests removed). · _commit: (next)_
-- [ ] **H3 — Remove runtime DDL**
-  - [ ] Drop `ensure_season_control_table(...)` calls from bronze/silver/gold DAGs; rely on migration `001`.
-  - [ ] Document "apply migrations first".
-  - _Resolution:_ _(pending)_ · _commit:_ —
+- [x] **H3 — Remove runtime DDL**
+  - [x] Dropped `ensure_season_control_table(...)` calls + imports from bronze/silver/gold DAGs; table now provisioned solely by migration `001`. (`ensure_control_tables` was removed with H2.)
+  - [x] The helper is kept in `season_helpers.py` for explicit/manual setup (mirrors the migration); `infra/postgres/README.md` already documents "apply migrations first".
+  - _Resolution:_ no DDL on the hot path; ruff clean; 70 tests pass. · _commit: (next)_
 
 ---
 

@@ -26,7 +26,6 @@ from airflow.task.trigger_rule import TriggerRule
 
 from lib.quality_helpers import record_stage_quality_passed
 from lib.season_helpers import (
-    ensure_season_control_table,
     get_pending_season,
     mark_stage_completed,
     mark_stage_failed,
@@ -129,8 +128,7 @@ def gold_processing():
         Picks the highest season number across ALL leagues (newest first).
         Returns {season_id, season, league_key}, or {} if nothing is ready.
         """
-        ensure_season_control_table(_get_conn)
-
+        # Table is provisioned by migration 001 (no runtime DDL).
         season_row = get_pending_season(_get_conn, None, stage="gold")
         if season_row is None:
             LOGGER.info("No silver_done season found across any league. Skipping.")

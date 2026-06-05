@@ -37,7 +37,6 @@ from lib.extraction_helpers import (
 from lib.league_config import LEAGUE_CONFIGS
 from lib.minio_config import get_minio_settings
 from lib.season_helpers import (
-    ensure_season_control_table,
     get_pending_season,
     mark_stage_completed,
     mark_stage_failed,
@@ -134,7 +133,7 @@ def _create_bronze_dag(league_key: str):
         # ------------------------------------------------------------------
         @task(task_id="get_season_and_mark_started")
         def get_season_and_mark_started() -> dict[str, Any]:
-            ensure_season_control_table(_get_conn)
+            # Table is provisioned by migration 001 (no runtime DDL).
             season_row = get_pending_season(_get_conn, league_key, stage="bronze")
             if season_row is None:
                 LOGGER.info(

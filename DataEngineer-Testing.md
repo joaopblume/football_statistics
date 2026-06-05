@@ -64,6 +64,23 @@ A change is only committed when (1) and (2) are green.
 - Both compose files validated with `docker compose … config` (the `${MINIO_*:-default}` interpolation resolves).
 - `py_compile` on the Bronze DAG + `extraction_helpers`. Suite still **80 passed**.
 
+### Wave 2 — High
+
+**H1 — Spark readiness-poll + pool** (commit `cffe2f1`)
+- `grep "sleep 10" dags/` → gone; `SPARK_POOL` referenced on all 3 container tasks in both DAGs.
+- Created the pool live: `airflow pools set spark_notebook 1 …` → "Pool spark_notebook created".
+- `py_compile` both DAGs; suite **80 passed**.
+- ⚠️ Cross-DAG serialization is best-checked live (trigger Silver + Gold to overlap and confirm only one notebook runs); residual start/stop window closes with the deferred spark-submit refactor.
+
+**H2 — retire queue→Postgres** (commit `31255f0`)
+- `grep -rn "ingestion_helpers|build_queue_message|fetch_player_profile|get_brasileirao|consume_brasileirao" --include=*.py` → no references.
+- `ruff check … --select F401,F811` → all clean (dead imports removed).
+- Suite **80 → 70** (the 10 now-irrelevant tests were removed with the code they covered).
+
+**H3 — remove runtime DDL** (commit `(this wave)`)
+- `grep -rn ensure_season_control_table` → only the definition in `season_helpers.py` (no DAG call sites).
+- ⚠️ Requires migrations to be applied first (`001`). On a fresh DB without migrations the DAGs now fail fast instead of silently creating tables — verify with: `psql -d futebol-dados -c "\d pipeline_season_control"`.
+
 ---
 
 ## 4. How YOU can test further
