@@ -379,3 +379,49 @@ def mark_stage_failed(
         )
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Refresh (re-pull live seasons)
+# ---------------------------------------------------------------------------
+
+def requeue_latest_complete_seasons(get_conn_fn) -> list[dict[str, Any]]:
+    """Re-queue the most recent COMPLETE season of each league back to 'pending'.
+
+    A season is terminal once ``complete``, but a *live* season keeps gaining
+    matches week to week. This resets only the highest ``season`` per league
+    that is currently ``complete`` (never one mid-pipeline) so the next Bronze
+    run re-extracts it and the data flows through Silver/Gold again.
+
+    Returns the list of ``{league_key, season}`` rows that were re-queued.
+    """
+    conn = get_conn_fn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (league_key) id
+                    FROM pipeline_season_control
+                    WHERE status = 'complete'
+                    ORDER BY league_key, season DESC
+                )
+                UPDATE pipeline_season_control p
+                SET status           = 'pending',
+                    last_error       = NULL,
+                    last_error_stage = NULL
+                FROM latest
+                WHERE p.id = latest.id
+                RETURNING p.league_key, p.season
+                """
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        result = [{"league_key": r[0], "season": r[1]} for r in rows]
+        LOGGER.info(
+            "requeue_latest_complete_seasons: re-queued %d season(s): %s",
+            len(result), result,
+        )
+        return result
+    finally:
+        conn.close()

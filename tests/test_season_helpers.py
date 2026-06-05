@@ -21,6 +21,7 @@ from lib.season_helpers import (
     mark_stage_completed,
     mark_stage_failed,
     mark_stage_started,
+    requeue_latest_complete_seasons,
 )
 
 
@@ -91,6 +92,38 @@ class TestClaimNextSeason:
         get_conn_fn, _, _ = _make_get_conn(fetchone_return=None)
         with pytest.raises(ValueError, match="Unknown stage"):
             claim_next_season(get_conn_fn, "BRA-Brasileirao", stage="platinum")
+
+
+# ---------------------------------------------------------------------------
+# requeue_latest_complete_seasons
+# ---------------------------------------------------------------------------
+
+class TestRequeueLatestCompleteSeasons:
+
+    def test_returns_requeued_rows(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        cursor.fetchall.return_value = [("BRA-Brasileirao", 2026), ("ITA-Serie A", 2026)]
+        result = requeue_latest_complete_seasons(get_conn_fn)
+        assert result == [
+            {"league_key": "BRA-Brasileirao", "season": 2026},
+            {"league_key": "ITA-Serie A", "season": 2026},
+        ]
+        conn.commit.assert_called_once()
+        conn.close.assert_called_once()
+
+    def test_sql_targets_complete_and_sets_pending(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        cursor.fetchall.return_value = []
+        requeue_latest_complete_seasons(get_conn_fn)
+        sql = cursor.execute.call_args[0][0]
+        assert "status = 'complete'" in sql      # only re-queues completed seasons
+        assert "status           = 'pending'" in sql or "status = 'pending'" in sql
+        assert "DISTINCT ON (league_key)" in sql  # one (the latest) per league
+
+    def test_empty_when_nothing_complete(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        cursor.fetchall.return_value = []
+        assert requeue_latest_complete_seasons(get_conn_fn) == []
 
 
 # ---------------------------------------------------------------------------
