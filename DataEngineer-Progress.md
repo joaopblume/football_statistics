@@ -58,12 +58,13 @@ _Last updated: Wave 1 (Critical) complete — C1, C2, L4, L6 done; 80 tests pass
   - [x] Added size-1 pool `spark_notebook` on **all three** container tasks (`start_spark`/`run_spark_*`/`stop_spark`) in both DAGs so neither run can start/stop the shared container while the other is mid-flight. Pool created live; `make airflow-setup-pools` provisions it.
   - [>] Full `.py` + `spark-submit` (ephemeral per-run containers) → **Deferred** (closes the residual start/stop window entirely).
   - _Resolution:_ readiness poll + cross-DAG size-1 pool. DAGs compile; pool created; 80 tests pass. · _commit: (next)_
-- [ ] **H2 — Retire the queue→Postgres path**
-  - [ ] Delete `dags/brasileirao_teams_to_pg.py`, `dags/consume_brasileirao_queue_to_pg.py`, `dags/lib/ingestion_helpers.py`.
-  - [ ] Remove now-dead helpers from `extraction_helpers.py` (`build_queue_message`, `fetch_player_profile`+`_extract_profile_url`, `write_csv`, `write_json`, `slug`, `ensure_brasileirao_mapping`, `ESPN_ATHLETE_API`); keep Bronze-used parsers.
-  - [ ] Remove orphan tests (`TestSlug`, `TestBuildQueueMessage`, `TestFetchPlayerProfile`).
-  - [ ] Update `dags/README.md` + `infra/postgres/README.md` (drop the queue path).
-  - _Resolution:_ _(pending)_ · _commit:_ —
+- [x] **H2 — Retire the queue→Postgres path**
+  - [x] Deleted `brasileirao_teams_to_pg.py`, `consume_brasileirao_queue_to_pg.py`, `lib/ingestion_helpers.py`.
+  - [x] Removed dead helpers from `extraction_helpers.py` (`build_queue_message`, `fetch_player_profile`+`_extract_profile_url`, `write_csv`/`write_json`, `slug`, `ensure_brasileirao_mapping`, `ESPN_ATHLETE_API`, `DEFAULT_API_DELAY`) + now-unused imports (`Path`/`pendulum`/`requests`); kept all Bronze-used parsers.
+  - [x] Removed orphan tests (`TestSlug`, `TestBuildQueueMessage`, `TestFetchPlayerProfile`) + a stale `ingestion_helpers` docstring ref.
+  - [x] Updated `dags/README.md` (Medallion + "queue aposentada" note) + `infra/postgres/README.md` (003 row accuracy).
+  - _Note:_ orphaned live tables (`raw_soccerdata_*`, `raw_ingestion_events`) can be dropped manually if desired — left untouched.
+  - _Resolution:_ queue lineage gone; ruff clean; 80 → 70 tests (10 dead tests removed). · _commit: (next)_
 - [ ] **H3 — Remove runtime DDL**
   - [ ] Drop `ensure_season_control_table(...)` calls from bronze/silver/gold DAGs; rely on migration `001`.
   - [ ] Document "apply migrations first".

@@ -16,25 +16,45 @@ Nossos DAGs são construídos com base nestes 4 princípios fundamentais:
 4. **Resiliência e Observabilidade**:
    - Todas as tasks definem parâmetros de `retries`, `retry_exponential_backoff` e `execution_timeout` por padrão.
 
-## Arquitetura de Ingestão (Queue/Batch)
+## Arquitetura do Pipeline (Medallion + Control Plane)
 
-Em vez de abrir uma conexão com banco de dados para cada linha baixada no momento da extração, nós utilizamos um padrão de **Desacoplamento por Fila (Queueing)**:
+O pipeline segue a arquitetura Medallion, com DAGs desacoplados via `Dataset`
+(*data-aware scheduling*) e coordenados por uma tabela de controle no PostgreSQL
+(`pipeline_season_control`):
 
-1. **DAG Extrator** (`brasileirao_teams_to_pg.py`): Realiza o trabalho pesado I/O bound e network bound. Escreve arquivos na pasta `output/` e anexa metadados (no state/format) numa fila `pending.jsonl`.
-2. **DAG Ingestor** (`consume_brasileirao_queue_to_pg.py`): Puxa lotes limitados (`QUEUE_BATCH_SIZE`) do `pending.jsonl`, realiza deduplicação lógica com tabelas de controle (`raw_ingestion_events`) e upserts massivos no Postgres.
+1. **Bronze** (`brasileirao_bronze_extraction.py`): *factory* que registra um DAG
+   por liga (`bronze_extraction__<liga>`, `@hourly`). Extrai schedule → matchsheet
+   → lineup → events do ESPN (via `soccerdata`) e sobe os JSONs para o MinIO
+   (`datalake-raw`). Emite o `Dataset` Bronze compartilhado.
+2. **Silver** (`brasileirao_silver_processing.py`): disparado pelo `Dataset` Bronze.
+   Sobe o container Spark, executa o notebook Silver (tabelas Iceberg `teams`,
+   `players`, `match_statistics`, `player_match_stats`) com *quality gates* reais
+   que abortam antes de gravar se os dados estiverem ruins, e emite o `Dataset` Silver.
+3. **Gold** (`brasileirao_gold_processing.py`): disparado pelo `Dataset` Silver.
+   Agrega `player_season_stats`.
 
-Esse padrão permite *backpressure*, evita overload no banco de dados alvo, facilita debugging, e nos permite processar o arquivo "pending" novamente se o DB estava off-line.
+O estado de cada season (`pending → bronze_running → … → complete | failed`) vive
+em `pipeline_season_control`; os helpers em `lib/season_helpers.py` leem/atualizam
+essa tabela, permitindo **retry incremental a partir do stage que falhou**.
+
+> Nota: a antiga ingestão em fila (`pending.jsonl` → Postgres `raw_soccerdata_*`)
+> foi **aposentada** em favor deste fluxo Medallion. O PostgreSQL permanece como
+> control plane (e futuro serving layer alimentado a partir do Gold).
 
 ## Organização do Diretório
 
 ```text
 dags/
-├── lib/                             # Lógica de extração e ingestão isolada
+├── lib/                              # Lógica isolada e testável
 │   ├── __init__.py
-│   ├── extraction_helpers.py      # Requests, Parsing JSON, DataFrames
-│   └── ingestion_helpers.py       # SQL Strings, psycopg2 execs, Dedups
-├── brasileirao_teams_to_pg.py       # Definition & config da orquestração extratora
-└── consume_brasileirao_queue_to_pg.py # Definition & config do worker ingestor
+│   ├── extraction_helpers.py        # soccerdata/ESPN → DataFrames → MinIO (Bronze)
+│   ├── league_config.py             # Registro de ligas + mapeamentos ESPN
+│   ├── minio_config.py              # Resolução de credenciais MinIO (sem segredos no código)
+│   ├── season_helpers.py            # Control plane (pipeline_season_control)
+│   └── quality_helpers.py           # Registro de quality checks
+├── brasileirao_bronze_extraction.py # Factory: 1 DAG Bronze por liga
+├── brasileirao_silver_processing.py # Bronze → Silver (Iceberg + quality gates)
+└── brasileirao_gold_processing.py   # Silver → Gold (Iceberg)
 ```
 
 ## Como Adicionar/Modificar Lógica

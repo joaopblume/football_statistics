@@ -4,64 +4,17 @@ import json
 import logging
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import pendulum
-import requests
 
 # Module-level logger
 LOGGER = logging.getLogger(__name__)
 
-# Base URL for the ESPN public API (athletes endpoint)
-ESPN_ATHLETE_API = (
-    "http://site.api.espn.com/apis/common/v3/sports/soccer/{league}/athletes/{athlete_id}"
-)
-
-# Default delay between ESPN API calls to avoid rate limiting (seconds)
-DEFAULT_API_DELAY = 0.5
-
 
 # ---------------------------------------------------------------------------
-# General-purpose helpers (moved from DAG files)
+# General-purpose helpers
 # ---------------------------------------------------------------------------
-
-def ensure_brasileirao_mapping(league_key: str = "BRA-Brasileirao") -> None:
-    """Backwards-compat alias — delegates to league_config.ensure_league_mapping."""
-    from lib.league_config import ensure_league_mapping
-    ensure_league_mapping(league_key)
-
-
-def slug(value: str) -> str:
-    """Convert an arbitrary string into a filesystem-safe slug.
-
-    Replaces non-alphanumeric characters with underscores, strips leading/
-    trailing underscores, and lowercases everything.  Returns ``"unknown"``
-    for empty results.
-    """
-    # Replace any non-alphanumeric character with underscore
-    result = re.sub(r"[^a-zA-Z0-9]+", "_", str(value)).strip("_").lower()
-    # Fallback if the result is empty
-    return result or "unknown"
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Serialize *payload* as formatted JSON to *path*, creating parent dirs."""
-    # Ensure parent directories exist
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write the JSON with readable indentation
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, default=str, indent=2)
-
-
-def write_csv(path: Path, df: pd.DataFrame) -> None:
-    """Write a DataFrame to CSV at *path*, creating parent dirs."""
-    # Ensure parent directories exist
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write CSV without the pandas index column
-    df.to_csv(path, index=False)
-
 
 def _to_json_str(df: pd.DataFrame) -> str:
     """Serialize a DataFrame to a compact JSON string (records orient, ISO dates)."""
@@ -83,32 +36,6 @@ def _make_s3_client(endpoint: str, access_key: str, secret_key: str):
         aws_secret_access_key=secret_key,
         region_name="us-east-1",
     )
-
-
-def build_queue_message(
-    entity_type: str,
-    entity_id: str | int,
-    payload_format: str,
-    path: str,
-    provider: str,
-    league: str,
-    season: int,
-) -> dict[str, Any]:
-    """Build a standardized queue message dict for pending.jsonl.
-
-    All queue messages share the same shape so downstream ingestion
-    can process them uniformly.
-    """
-    return {
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "payload_format": payload_format,
-        "path": str(path),
-        "provider": provider,
-        "league": league,
-        "season": season,
-        "created_at": pendulum.now("UTC").to_iso8601_string(),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -257,94 +184,7 @@ def _parse_clock_minute(event: dict[str, Any]) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# ESPN athlete profile fetching
-# ---------------------------------------------------------------------------
-
-def fetch_player_profile(
-    athlete_id: int,
-    league_espn_key: str,
-    delay: float = DEFAULT_API_DELAY,
-) -> dict[str, Any] | None:
-    """Fetch a player profile from the ESPN athlete API.
-
-    Parameters
-    ----------
-    athlete_id : int
-        ESPN athlete numeric ID.
-    league_espn_key : str
-        ESPN league key, e.g. ``"bra.1"``.
-    delay : float
-        Seconds to sleep after the request (rate limiting).
-
-    Returns
-    -------
-    dict or None
-        The parsed profile dict, or None if the request failed.
-    """
-    url = ESPN_ATHLETE_API.format(league=league_espn_key, athlete_id=athlete_id)
-    LOGGER.info("Fetching player profile: athlete_id=%s url=%s", athlete_id, url)
-
-    try:
-        # Make the HTTP GET request to ESPN's public API
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        raw = response.json()
-
-        # Extract the nested athlete object
-        athlete = raw.get("athlete", {})
-
-        # Build a flattened profile dict with the fields we care about
-        profile: dict[str, Any] = {
-            "espn_athlete_id": int(athlete.get("id", athlete_id)),
-            "espn_guid": athlete.get("guid"),
-            "first_name": athlete.get("firstName"),
-            "last_name": athlete.get("lastName"),
-            "display_name": athlete.get("displayName"),
-            "full_name": athlete.get("fullName"),
-            "jersey": athlete.get("jersey"),
-            "position_id": athlete.get("position", {}).get("id"),
-            "position_name": athlete.get("position", {}).get("name"),
-            "team_id": athlete.get("team", {}).get("id"),
-            "team_name": athlete.get("team", {}).get("displayName"),
-            "date_of_birth": athlete.get("displayDOB"),
-            "age": athlete.get("age"),
-            "gender": athlete.get("gender"),
-            "is_active": athlete.get("active"),
-            "profile_url": _extract_profile_url(athlete),
-            # Keep the full raw response for future use
-            "_raw": raw,
-        }
-
-        LOGGER.info(
-            "Profile fetched: athlete_id=%s name=%s",
-            athlete_id,
-            profile.get("display_name"),
-        )
-        return profile
-
-    except requests.RequestException as exc:
-        LOGGER.warning(
-            "Failed to fetch profile for athlete_id=%s: %s", athlete_id, exc
-        )
-        return None
-    finally:
-        # Rate-limit: sleep after each call regardless of success/failure
-        if delay > 0:
-            time.sleep(delay)
-
-
-def _extract_profile_url(athlete: dict[str, Any]) -> str | None:
-    """Extract the ESPN player card URL from the athlete links array."""
-    for link in athlete.get("links", []):
-        # Look for the playercard / overview link
-        rels = link.get("rel", [])
-        if "playercard" in rels or "overview" in rels:
-            return link.get("href")
-    return None
-
-
-# ---------------------------------------------------------------------------
-# ESPN summary JSON cache constants (mirrors brasileirao_teams_to_pg.py)
+# ESPN summary JSON cache constants
 # ---------------------------------------------------------------------------
 
 # URL template for ESPN match summary API

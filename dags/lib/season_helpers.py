@@ -4,9 +4,9 @@ The season control table is the single source of truth for which seasons
 the pipeline should process and what stage each is at.  DAGs call these
 helpers instead of using hardcoded SEASON constants.
 
-Connection pattern follows ingestion_helpers.py: callers pass a zero-argument
-callable (get_conn_fn) that returns a psycopg2 connection with autocommit=False.
-This keeps the helpers Airflow-agnostic and fully unit-testable.
+Connection pattern: callers pass a zero-argument callable (get_conn_fn) that
+returns a psycopg2 connection with autocommit=False. This keeps the helpers
+Airflow-agnostic and fully unit-testable.
 
 Status lifecycle:
     pending
