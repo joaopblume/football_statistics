@@ -13,13 +13,13 @@
 | 0 | Setup | 3 | 3 |
 | 1 | 🔴 Critical | 2 | 2 ✅ |
 | 2 | 🟠 High | 3 | 3 ✅ |
-| 3 | 🟡 Medium | 0 | 6 |
+| 3 | 🟡 Medium | 4 | 4 ✅ (M1 superseded, M5 deferred) |
 | 4 | 🟢 Low / hygiene | 0 | 10 |
 | 5 | 📈 Observability (§4 / C3) | 0 | 6 |
 | 6 | Wrap-up | 0 | 1 |
 | — | Deferred (tracked) | — | 6 |
 
-_Last updated: Wave 2 + live pipeline verification complete. 3 additional real bugs found by running the DAGs end-to-end and fixed (V1–V3). 70 unit tests passing._
+_Last updated: Wave 3 (Medium) complete — M2, M3, M4, M6 done (M1 superseded, M5 deferred), each verified live. 78 unit tests passing._
 
 ## Live verification findings (running the actual pipelines)
 
@@ -86,10 +86,10 @@ Running the real Airflow DAGs end-to-end (per user request) surfaced bugs that u
 
 ## Wave 3 — 🟡 Medium
 
-- [ ] **M2 — Row locking in `get_pending_season`** → single txn + `SELECT … FOR UPDATE SKIP LOCKED`; extend `tests/test_season_helpers.py`.
-- [ ] **M3 — `game_map` off XCom** → upload `game_map.json` to MinIO in `extract_schedule_to_minio`; downstream reads from the object store.
-- [ ] **M4 — Live-season refresh** → small DAG re-queuing the configured in-progress season (`complete → pending`).
-- [ ] **M6 — Stable `match_events`** → always create the table (empty w/ schema) when `events.json` absent.
+- [x] **M2 — Atomic season claim** → new `claim_next_season()` does `SELECT … FOR UPDATE SKIP LOCKED` + mark-running in **one transaction**; Bronze/Silver/Gold use it. 5 tests. _commit e59fb06._
+- [x] **M3 — `game_map` off XCom** → `extract_schedule_to_minio` writes `game_map.json` to MinIO; lineup/events read it via `_load_game_map()`. Verified live (380 games, 16KiB). _commit 0d02d4a._
+- [x] **M4 — Live-season refresh** → `requeue_latest_complete_seasons()` + `@weekly` `pipeline_season_refresh` DAG (latest complete → pending per league). 3 tests; verified live (re-queued BRA 2022). _commit 4e58dca._
+- [x] **M6 — Stable `match_events`** → always materialize the table (empty w/ stable schema if no events). Verified live (BRA 2022 → table exists, 0 rows). _commit 2836e79._
 - [-] **M1 — Per-row upserts** → **superseded** by H2 (lived in `ingestion_helpers`).
 - [>] **M5 — `athlete_id` surrogate key in modeling** → **deferred** (modeling change).
 
