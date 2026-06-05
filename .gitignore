@@ -18,6 +18,9 @@ output/
 *.jsonl
 *.parquet
 
+# MinIO local object store (runtime data, ~200MB — never commit)
+infra/minio/minio-data/
+
 # Airflow
 airflow.cfg
 airflow.db

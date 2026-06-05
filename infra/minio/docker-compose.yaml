@@ -13,10 +13,10 @@ services:
       # Web console port (used for manual GUI administration)
       - "9001:9001"
     environment:
-      # Root user (functionally equivalent to an AWS Access Key)
-      MINIO_ROOT_USER: minioadmin
-      # Root password (functionally equivalent to an AWS Secret Key)
-      MINIO_ROOT_PASSWORD: minioadmin123
+      # Root user / password — read from the environment (.env) with local-dev
+      # defaults. Override in any real deployment; do not rely on these defaults.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       # Set a default region to prevent errors from strict AWS S3 client libraries
       MINIO_REGION_NAME: us-east-1
     volumes:
@@ -47,7 +47,7 @@ services:
     entrypoint: |
       /bin/sh -c '
       # Keep attempting to set the alias until it succeeds
-      until mc alias set local http://minio:9000 minioadmin minioadmin123; do
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123}; do
         echo "Waiting for MinIO server to initialize..."
         sleep 2
       done

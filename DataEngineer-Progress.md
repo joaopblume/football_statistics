@@ -10,7 +10,7 @@
 | Wave | Scope | Done | Total |
 |---|---|---|---|
 | 0 | Setup | 3 | 3 |
-| 1 | 🔴 Critical | 0 | 2 |
+| 1 | 🔴 Critical | 2 | 2 ✅ |
 | 2 | 🟠 High | 0 | 3 |
 | 3 | 🟡 Medium | 0 | 6 |
 | 4 | 🟢 Low / hygiene | 0 | 10 |
@@ -18,7 +18,7 @@
 | 6 | Wrap-up | 0 | 1 |
 | — | Deferred (tracked) | — | 6 |
 
-_Last updated: Wave 0 complete._
+_Last updated: Wave 1 (Critical) complete — C1, C2, L4, L6 done; 80 tests passing._
 
 ---
 
@@ -38,13 +38,13 @@ _Last updated: Wave 0 complete._
   - [x] Add unit tests for `record_quality_report` (6 new tests, mock-conn pattern).
   - [x] Delete the duplicate verify cell (**L6**).
   - _Resolution:_ measured gates in notebook + `report.json` handoff to MinIO + `record_quality_report` helper. `record_stage_quality_passed` kept (still used by Gold for now). 80 tests pass. · _commit: (next)_
-- [ ] **C2 — Secrets out of code**
-  - [ ] Remove `minioadmin/minioadmin123` defaults from `dags/brasileirao_bronze_extraction.py` (fail-fast if absent).
-  - [ ] Parameterize creds in `infra/minio/docker-compose.yaml`, `infra/spark/docker-compose.yaml`, `infra/spark/conf/spark-defaults.conf` (env-driven, marked local-dev defaults).
-  - [ ] Add `.env.example` (placeholders only); document MinIO Airflow Connection + prod override.
-  - [ ] Add `infra/minio/minio-data/` to `.gitignore` (**L4**).
-  - _Note:_ real secrets cannot be rotated here; flagged for the user.
-  - _Resolution:_ _(pending)_ · _commit:_ —
+- [x] **C2 — Secrets out of code**
+  - [x] New `lib/minio_config.get_minio_settings()` reads creds from env and **fail-fasts** if unset; Bronze + Silver DAGs use it. Removed `minioadmin123` literals + `minio*` secret defaults from `extraction_helpers`.
+  - [x] Parameterized `infra/minio/docker-compose.yaml`, `infra/spark/docker-compose.yaml` (`${MINIO_*:-default}`); `spark-defaults.conf` now uses `EnvironmentVariableCredentialsProvider` (no keys in file).
+  - [x] Added `.env.example`; local-dev creds moved to `infra/airflow/airflow.env` (systemd `EnvironmentFile`, clearly marked) — not in app code.
+  - [x] Added `infra/minio/minio-data/` to `.gitignore` (**L4**).
+  - _Note:_ real secrets still need rotation (out of scope here); prod should use a secrets backend. After deploy, run `make airflow-install-services` so the new env reaches Airflow.
+  - _Resolution:_ env-driven creds, fail-fast, no secret literals in `*.py`. compose validates; 80 tests pass. · _commit: (next)_
 
 > **C3 (no observability)** is the whole of §4 → tracked in **Wave 5**.
 

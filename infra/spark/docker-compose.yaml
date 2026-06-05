@@ -7,9 +7,11 @@ services:
       - "8888:8888" # Jupyter Notebook UI
       - "4040:4040" # Spark UI (active when SparkSession is running)
     environment:
-      # Credentials for MinIO (mapped to Hadoop S3A)
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin123
+      # Credentials for MinIO (mapped to Hadoop S3A). Read from the environment
+      # (.env) with local-dev defaults; Spark's S3A reads these env vars via the
+      # EnvironmentVariableCredentialsProvider (no secrets in spark-defaults.conf).
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
 
       # Expose Spark to all processes (including docker exec).
       # Without these, processes launched via 'docker exec' cannot find

@@ -35,6 +35,7 @@ from lib.extraction_helpers import (
     extract_schedule_to_minio,
 )
 from lib.league_config import LEAGUE_CONFIGS
+from lib.minio_config import get_minio_settings
 from lib.season_helpers import (
     ensure_season_control_table,
     get_pending_season,
@@ -50,9 +51,8 @@ from lib.season_helpers import (
 LOGGER = logging.getLogger(__name__)
 POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+# MinIO credentials are resolved at task runtime from the environment via
+# get_minio_settings() — there are no hardcoded secret defaults in code.
 
 # Shared Dataset URI — all Bronze DAGs emit this same URI so Silver is
 # triggered regardless of which league just finished.
@@ -80,11 +80,8 @@ def _get_conn():
 
 
 def _minio_kwargs() -> dict:
-    return {
-        "minio_endpoint": MINIO_ENDPOINT,
-        "minio_access_key": MINIO_ACCESS_KEY,
-        "minio_secret_key": MINIO_SECRET_KEY,
-    }
+    # Resolved at task runtime; raises if MINIO_ACCESS_KEY/SECRET_KEY are unset.
+    return get_minio_settings()
 
 
 def _dag_id(league_key: str) -> str:

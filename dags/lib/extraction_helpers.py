@@ -538,8 +538,8 @@ def extract_schedule_to_minio(
     league_key: str,
     season: int,
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch the season schedule from ESPN and upload schedule.json to MinIO.
@@ -588,8 +588,8 @@ def extract_matchsheet_to_minio(
     league_key: str,
     season: int,
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch per-match team stats from ESPN and upload matchsheet.json to MinIO.
@@ -630,8 +630,8 @@ def extract_lineup_to_minio(
     season: int,
     game_map: dict[str, int],
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch per-player lineup data from ESPN and upload lineup.json to MinIO.
@@ -687,8 +687,8 @@ def extract_events_to_minio(
     season: int,
     game_map: dict[str, int],
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch match events (goals, cards, subs) from ESPN and upload events.json.
