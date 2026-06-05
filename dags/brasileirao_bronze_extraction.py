@@ -151,7 +151,7 @@ def _create_bronze_dag(league_key: str):
             }
 
         # ------------------------------------------------------------------
-        # Task 2: Extract schedule → returns game_map
+        # Task 2: Extract schedule → writes game_map.json to MinIO
         # ------------------------------------------------------------------
         @task(task_id="extract_schedule", on_failure_callback=_on_extraction_failure)
         def extract_schedule(season_info: dict[str, Any]) -> dict[str, Any]:
@@ -165,7 +165,7 @@ def _create_bronze_dag(league_key: str):
             LOGGER.info(
                 "[%s] Schedule: season=%s rows=%s games=%s (%.2fs)",
                 dag_id, season_info["season"],
-                result["schedule_rows"], len(result.get("game_map", {})),
+                result["schedule_rows"], result.get("game_count", 0),
                 result["elapsed_seconds"],
             )
             return result
@@ -193,7 +193,7 @@ def _create_bronze_dag(league_key: str):
             return result
 
         # ------------------------------------------------------------------
-        # Task 4: Extract lineup (needs game_map from schedule)
+        # Task 4: Extract lineup (reads game_map.json from MinIO)
         # ------------------------------------------------------------------
         @task(task_id="extract_lineup", on_failure_callback=_on_extraction_failure)
         def extract_lineup(
@@ -201,12 +201,11 @@ def _create_bronze_dag(league_key: str):
             sched: dict[str, Any],
             _ms: dict[str, Any],
         ) -> dict[str, Any]:
-            if not season_info or not season_info.get("season") or not sched.get("game_map"):
+            if not season_info or not season_info.get("season") or not sched.get("game_count"):
                 return {}
             result = extract_lineup_to_minio(
                 league_key=league_key,
                 season=season_info["season"],
-                game_map=sched["game_map"],
                 **_minio_kwargs(),
             )
             LOGGER.info(
@@ -225,12 +224,11 @@ def _create_bronze_dag(league_key: str):
             sched: dict[str, Any],
             _lu: dict[str, Any],
         ) -> dict[str, Any]:
-            if not season_info or not season_info.get("season") or not sched.get("game_map"):
+            if not season_info or not season_info.get("season") or not sched.get("game_count"):
                 return {}
             result = extract_events_to_minio(
                 league_key=league_key,
                 season=season_info["season"],
-                game_map=sched["game_map"],
                 **_minio_kwargs(),
             )
             LOGGER.info(
