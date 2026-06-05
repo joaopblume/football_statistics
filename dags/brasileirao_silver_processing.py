@@ -179,7 +179,7 @@ def silver_processing():
             "LEAGUE_KEY": "{{ ti.xcom_pull(task_ids='get_season_and_mark_started')['league_key'] }}",
         },
         bash_command=(
-            f"docker exec -e SEASON=$SEASON -e LEAGUE_KEY=$LEAGUE_KEY {SPARK_CONTAINER} "
+            f'docker exec -e SEASON="$SEASON" -e LEAGUE_KEY="$LEAGUE_KEY" {SPARK_CONTAINER} '
             f"jupyter nbconvert --to notebook --execute {NOTEBOOK_PATH} "
             "--output-dir /tmp "
             "--ExecutePreprocessor.timeout=1800 "
