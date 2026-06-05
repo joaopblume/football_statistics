@@ -1,6 +1,7 @@
 # Data Engineering — Resolution Progress Tracker
 
 > Companion to [`DataEngineer.MD`](./DataEngineer.MD). One checkbox per issue raised in that review.
+> Testing process + how to verify each change: [`DataEngineer-Testing.md`](./DataEngineer-Testing.md).
 > Work happens on branch **`de-hardening`**, phased by tier, tests + commit after each wave.
 
 **Legend:** `[ ]` todo · `[~]` in progress · `[x]` done · `[>]` tracked / deferred (follow-up) · `[-]` superseded / N-A
