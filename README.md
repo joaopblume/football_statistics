@@ -118,38 +118,51 @@ erDiagram
 | **Processamento** | Apache Spark + Iceberg | Transformacoes Silver/Gold |
 | **Object Storage** | MinIO (S3-compatible) | Bronze layer (datalake-raw) |
 | **Data Warehouse** | Apache Iceberg | Silver/Gold tables ACID |
+| **Control plane / Serving** | PostgreSQL | Estado da pipeline (`pipeline_season_control`) + quality checks |
 | **Containers** | Docker, Docker Compose | Spark e MinIO infra |
+
+> **Multi-liga:** o Bronze é uma *factory* que registra um DAG por liga
+> (`bronze_extraction__BRA-Brasileirao`, `…__ITA-Serie_A`, `…__ENG-Premier_League`,
+> `…__FRA-Ligue_1`). O avanço de cada season é coordenado pela tabela
+> `pipeline_season_control` (`pending → bronze_done → silver_done → complete`),
+> permitindo retry incremental a partir do stage que falhou.
 
 ## Estrutura de Diretorios
 
 ```text
 football_statistics/
-├── dags/                           # Airflow DAGs
-│   ├── lib/                        # Business logic (extraction helpers)
-│   ├── brasileirao_lakehouse_pipeline.py  # Full pipeline DAG
-│   ├── brasileirao_teams_to_pg.py         # Extraction + PG queue
-│   └── consume_brasileirao_queue_to_pg.py # PG ingestion
+├── dags/                                  # Airflow DAGs
+│   ├── lib/                               # Lógica de negócio testável
+│   │   ├── extraction_helpers.py          # soccerdata/ESPN → DataFrames → MinIO (Bronze)
+│   │   ├── league_config.py               # Registro de ligas + mapeamentos ESPN
+│   │   ├── minio_config.py                # Credenciais MinIO (env; sem segredos no código)
+│   │   ├── season_helpers.py              # Control plane (claim atômico + transições)
+│   │   └── quality_helpers.py             # Registro de quality checks
+│   ├── brasileirao_bronze_extraction.py   # Factory: 1 DAG Bronze por liga (@hourly)
+│   ├── brasileirao_silver_processing.py   # Bronze → Silver (Iceberg + quality gates)
+│   ├── brasileirao_gold_processing.py     # Silver → Gold (Iceberg)
+│   └── pipeline_season_refresh.py         # @weekly: re-pull da season ao vivo
 ├── infra/
-│   ├── spark/
-│   │   ├── notebooks/              # Jupyter/PySpark notebooks
-│   │   │   ├── spark_silver_processing.ipynb  # Silver/Gold processing
-│   │   │   └── lakehouse_end_to_end.ipynb     # Interactive dev notebook
-│   │   ├── conf/spark-defaults.conf  # Iceberg + MinIO config
-│   │   └── docker-compose.yaml       # Spark container
-│   └── minio/
-│       └── docker-compose.yaml       # MinIO + bucket init
-├── tests/                          # Unit tests
-├── Makefile                        # infra-up / infra-down / logs
-└── requirements.txt
+│   ├── airflow/                           # systemd units + env (instalação nativa)
+│   ├── minio/docker-compose.yaml          # MinIO + init de buckets
+│   ├── postgres/migrations/               # SQL idempotente (control plane + quality)
+│   └── spark/
+│       ├── notebooks/                     # spark_silver/gold_processing.ipynb (+ dev)
+│       ├── conf/spark-defaults.conf       # Iceberg + MinIO (S3A via env creds)
+│       └── docker-compose.yaml            # container jupyter-spark
+├── tests/                                 # Testes unitários (mock psycopg2)
+├── Makefile                               # infra-up/down, airflow-*, setup-pools
+├── requirements.txt / requirements-dev.txt / requirements.lock.txt
+└── DataEngineer*.md                       # Review + tracker + notas de teste
 ```
 
 ## Configuracao do Ambiente
 
 1. **Python Virtual Environment**:
    ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
+   python -m venv venv && source venv/bin/activate
+   pip install -r requirements.txt        # runtime
+   pip install -r requirements-dev.txt     # + testes/lint (ruff, pytest)
    ```
 
 2. **Infraestrutura (MinIO + Spark)**:
@@ -157,26 +170,35 @@ football_statistics/
    make infra-up
    ```
 
-3. **Symlink do Airflow**:
+3. **Symlink do Airflow + migrations + pool**:
    ```bash
    ln -sfn $(pwd)/dags $AIRFLOW_HOME/dags
+   # aplicar as migrations (idempotentes) do control plane:
+   psql -d <db> -f infra/postgres/migrations/001_pipeline_season_control.sql
+   psql -d <db> -f infra/postgres/migrations/002_pipeline_quality_checks.sql
+   psql -d <db> -f infra/postgres/migrations/003_seed_seasons.sql
+   make airflow-setup-pools   # pool size-1 que serializa os notebooks Silver/Gold
    ```
+
+> As credenciais do MinIO são lidas do ambiente (ver `.env.example` e
+> `infra/airflow/airflow.env`) — não há segredos no código.
 
 ## Testes
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v        # testes unitários (sem infra; mock psycopg2)
+ruff check dags/ tests/ # lint (também roda no CI)
 ```
 
 ## Roadmap
 
-- [x] Extracao confiavel com `soccerdata` (ESPN: schedule, matchsheet, lineup)
-- [x] Pipeline incremental (Queue-based com `.jsonl`)
-- [x] Ingestao Idempotente no PostgreSQL (Dynamic Upsert)
-- [x] Bronze layer em MinIO (S3-compatible)
-- [x] Silver: Tabelas dimensionais (`teams`, `players`) e fatos (`match_statistics`, `player_match_stats`)
+- [x] Extracao confiavel com `soccerdata` (ESPN: schedule, matchsheet, lineup, events)
+- [x] Multi-liga (BRA/ITA/ENG/FRA) via DAG factory + control plane (`pipeline_season_control`)
+- [x] Bronze layer em MinIO (S3-compatible), `game_map` via object store
+- [x] Silver: dims (`teams`, `players`) e fatos (`match_statistics`, `player_match_stats`, `match_events`)
 - [x] Gold: Agregacoes de temporada (`player_season_stats`)
-- [x] Orquestracao Airflow com lifecycle management do Spark
-- [ ] Modelagem Dimensional avancada (Star Schema completo)
-- [ ] Data Quality (dbt / Great Expectations)
+- [x] Quality gates **reais** no Silver (mede + aborta) e Gold; resultados em `pipeline_quality_checks`
+- [x] Orquestracao Airflow (datasets) com lifecycle do Spark + refresh semanal de seasons ao vivo
+- [ ] Observabilidade (OpenTelemetry → Prometheus/Grafana; manutenção Iceberg)
+- [ ] Modelagem Dimensional avancada (surrogate keys via `athlete_id`, Star Schema, SCD)
 - [ ] ML: Modelos Preditivos (PyTorch)
