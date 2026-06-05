@@ -1,0 +1,127 @@
+# Data Engineering — Resolution Progress Tracker
+
+> Companion to [`DataEngineer.MD`](./DataEngineer.MD). One checkbox per issue raised in that review.
+> Work happens on branch **`de-hardening`**, phased by tier, tests + commit after each wave.
+
+**Legend:** `[ ]` todo · `[~]` in progress · `[x]` done · `[>]` tracked / deferred (follow-up) · `[-]` superseded / N-A
+
+## Progress summary
+
+| Wave | Scope | Done | Total |
+|---|---|---|---|
+| 0 | Setup | 3 | 3 |
+| 1 | 🔴 Critical | 0 | 2 |
+| 2 | 🟠 High | 0 | 3 |
+| 3 | 🟡 Medium | 0 | 6 |
+| 4 | 🟢 Low / hygiene | 0 | 10 |
+| 5 | 📈 Observability (§4 / C3) | 0 | 6 |
+| 6 | Wrap-up | 0 | 1 |
+| — | Deferred (tracked) | — | 6 |
+
+_Last updated: Wave 0 complete._
+
+---
+
+## Wave 0 — Setup
+
+- [x] **W0.1** Create feature branch `de-hardening`. — _done_
+- [x] **W0.2** Capture green test baseline. — _`74 passed`_
+- [x] **W0.3** Create this tracker (`DataEngineer-Progress.md`). — _done_
+
+---
+
+## Wave 1 — 🔴 Critical
+
+- [ ] **C1 — Silver quality gates are theater → make them real**
+  - [ ] Compute the 10 declared checks in `spark_silver_processing.ipynb` (empty-table; null-rate for team/player/game keys; `home_score_not_all_null`; `athlete_id` coverage) and `raise` on failure before the write cell.
+  - [ ] Record **measured** results via `record_quality_check(..., status, details="…")` (silver DAG) instead of blanket `record_stage_quality_passed`.
+  - [ ] Retire/trim `record_stage_quality_passed` if now unused.
+  - [ ] Add unit tests for the new check logic (mock-conn pattern).
+  - [ ] Delete the duplicate verify cell (**L6**) while in the notebook.
+  - _Resolution:_ _(pending)_ · _commit:_ —
+- [ ] **C2 — Secrets out of code**
+  - [ ] Remove `minioadmin/minioadmin123` defaults from `dags/brasileirao_bronze_extraction.py` (fail-fast if absent).
+  - [ ] Parameterize creds in `infra/minio/docker-compose.yaml`, `infra/spark/docker-compose.yaml`, `infra/spark/conf/spark-defaults.conf` (env-driven, marked local-dev defaults).
+  - [ ] Add `.env.example` (placeholders only); document MinIO Airflow Connection + prod override.
+  - [ ] Add `infra/minio/minio-data/` to `.gitignore` (**L4**).
+  - _Note:_ real secrets cannot be rotated here; flagged for the user.
+  - _Resolution:_ _(pending)_ · _commit:_ —
+
+> **C3 (no observability)** is the whole of §4 → tracked in **Wave 5**.
+
+---
+
+## Wave 2 — 🟠 High
+
+- [ ] **H1 — Fragile Spark execution (incremental fix)**
+  - [ ] Replace `sleep 10` with a readiness-poll loop (+ timeout) in `start_spark` (silver + gold).
+  - [ ] Add an Airflow **Pool** (size 1) on `run_spark_silver` + `run_spark_gold` to serialize the shared container across DAGs.
+  - [ ] `[>]` Full `.py` + `spark-submit` conversion → **Deferred**.
+  - _Resolution:_ _(pending)_ · _commit:_ —
+- [ ] **H2 — Retire the queue→Postgres path**
+  - [ ] Delete `dags/brasileirao_teams_to_pg.py`, `dags/consume_brasileirao_queue_to_pg.py`, `dags/lib/ingestion_helpers.py`.
+  - [ ] Remove now-dead helpers from `extraction_helpers.py` (`build_queue_message`, `fetch_player_profile`+`_extract_profile_url`, `write_csv`, `write_json`, `slug`, `ensure_brasileirao_mapping`, `ESPN_ATHLETE_API`); keep Bronze-used parsers.
+  - [ ] Remove orphan tests (`TestSlug`, `TestBuildQueueMessage`, `TestFetchPlayerProfile`).
+  - [ ] Update `dags/README.md` + `infra/postgres/README.md` (drop the queue path).
+  - _Resolution:_ _(pending)_ · _commit:_ —
+- [ ] **H3 — Remove runtime DDL**
+  - [ ] Drop `ensure_season_control_table(...)` calls from bronze/silver/gold DAGs; rely on migration `001`.
+  - [ ] Document "apply migrations first".
+  - _Resolution:_ _(pending)_ · _commit:_ —
+
+---
+
+## Wave 3 — 🟡 Medium
+
+- [ ] **M2 — Row locking in `get_pending_season`** → single txn + `SELECT … FOR UPDATE SKIP LOCKED`; extend `tests/test_season_helpers.py`.
+- [ ] **M3 — `game_map` off XCom** → upload `game_map.json` to MinIO in `extract_schedule_to_minio`; downstream reads from the object store.
+- [ ] **M4 — Live-season refresh** → small DAG re-queuing the configured in-progress season (`complete → pending`).
+- [ ] **M6 — Stable `match_events`** → always create the table (empty w/ schema) when `events.json` absent.
+- [-] **M1 — Per-row upserts** → **superseded** by H2 (lived in `ingestion_helpers`).
+- [>] **M5 — `athlete_id` surrogate key in modeling** → **deferred** (modeling change).
+
+---
+
+## Wave 4 — 🟢 Low / hygiene
+
+- [ ] **L1** Delete dead `database/` + `extraction/` directories.
+- [ ] **L2** De-dup `drop_silver_gold_tables.py` (keep the mounted `notebooks/` copy, track it).
+- [ ] **L3** Fix stale top `README.md` (remove `brasileirao_lakehouse_pipeline.py`; add multi-league factory, season-control state machine, full notebook list, queue-path removal, observability pointer).
+- [ ] **L5** Factor shared boilerplate (`_get_conn`, `DEFAULT_ARGS`, `_on_notebook_failure`, `_write_partitioned`) + unify the near-identical silver/gold DAGs (**§6**).
+- [ ] **L6** Remove duplicate notebook verify cell. — _(done within C1)_
+- [ ] **L7** Split `requirements.txt` → runtime + `requirements-dev.txt` (file reorg only, no reinstall).
+- [ ] **L8** Add CI (`.github/workflows/ci.yml`: ruff + pytest) + `.pre-commit-config.yaml`.
+- [ ] **L9** Add compose healthchecks (minio/spark) + `depends_on: condition: service_healthy`.
+- [ ] **§6a** Raise `AirflowSkipException` on no-op bronze runs (distinguish "nothing to do" from "did work").
+- [x] **L4** `minio-data/` gitignored. — _(folded into C2)_
+
+---
+
+## Wave 5 — 📈 Observability (§4 / C3)
+
+New `infra/observability/` stack: `docker-compose.yaml` (otel-collector + prometheus + grafana + postgres_exporter + spark-history-server) + scrape/alert configs + starter dashboard.
+
+- [ ] **4.A — Airflow** OTel `[metrics]`/`[traces]` config + failure **notifier** (SMTP/Slack) wired to DAGs + one custom-span example.
+- [ ] **4.C — MinIO** Prometheus scrape + node/disk alert rules; document audit-log webhook.
+- [ ] **4.D — Spark** `PrometheusServlet` + `spark.eventLog.*` in `spark-defaults.conf`; History Server on `s3a://datalake-artifacts/spark-events`.
+- [ ] **4.E — Iceberg** maintenance DAG (`expire_snapshots` + `rewrite_data_files`, weekly) + per-run snapshot-summary deltas → `pipeline_quality_checks`.
+- [ ] **4.F — Postgres** Grafana board over `pipeline_season_control` + `pipeline_quality_checks` via `postgres_exporter`.
+- [ ] **4.G — Stack compose** authored + `docker compose config` validates.
+- [>] **4.LIVE — Bring stack up + verify dashboards/metrics** → **deferred** (needs Airflow + Spark running).
+
+---
+
+## Wave 6 — Wrap-up
+
+- [ ] **W6.1** Final `pytest` green; finalize this tracker; leave commits on `de-hardening`; offer a PR.
+
+---
+
+## Deferred backlog (tracked, not in this pass)
+
+- [>] **H1-full** Notebooks → parameterized `.py` jobs via `spark-submit`/operator.
+- [>] **M5** Re-key `players` dimension on `athlete_id`; carry into facts.
+- [>] **§8** SCD-2 on `players`/`teams`; surrogate keys.
+- [>] **§4-live** Stand up + validate the monitoring stack against live Airflow/Spark.
+- [>] **Stretch** OpenLineage → Marquez (column-level lineage).
+- [>] **Stretch** Data-quality framework migration (Great Expectations / Soda Core).
