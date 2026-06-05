@@ -33,9 +33,10 @@ scrape_configs:
     static_configs:
       - targets: ["postgres-exporter:9187"]
 
-  # Spark driver metrics — only up WHILE a Silver/Gold notebook runs
-  # (the jupyter-spark UI on :4040 is transient). Needs
-  # spark.ui.prometheus.enabled=true (set in spark-defaults.conf).
+  # Spark driver metrics on the *persistent* jupyter-spark container (used by
+  # the iceberg_maintenance DAG / dev). The Silver/Gold jobs now run as ephemeral
+  # `docker run` containers with random names, so they are NOT scraped here —
+  # their observability is the Spark History Server (event logs in MinIO).
   - job_name: spark-driver
     metrics_path: /metrics/prometheus
     static_configs:
