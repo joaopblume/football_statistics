@@ -17,17 +17,17 @@ Produces dataset: minio://datalake-raw/espn/bronze  (shared across all leagues)
 """
 
 import logging
-import os
 import re
 from datetime import timedelta
 from typing import Any
 
 import pendulum
 from airflow.datasets import Dataset
-from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.exceptions import AirflowSkipException
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
+from lib.airflow_common import get_pg_conn, otel_span, pipeline_failure_notifier
 from lib.extraction_helpers import (
     extract_events_to_minio,
     extract_lineup_to_minio,
@@ -35,12 +35,11 @@ from lib.extraction_helpers import (
     extract_schedule_to_minio,
 )
 from lib.league_config import LEAGUE_CONFIGS
+from lib.minio_config import get_minio_settings
 from lib.season_helpers import (
-    ensure_season_control_table,
-    get_pending_season,
+    claim_next_season,
     mark_stage_completed,
     mark_stage_failed,
-    mark_stage_started,
 )
 
 # ---------------------------------------------------------------------------
@@ -48,11 +47,9 @@ from lib.season_helpers import (
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
-POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+# MinIO credentials are resolved at task runtime from the environment via
+# get_minio_settings() — there are no hardcoded secret defaults in code.
 
 # Shared Dataset URI — all Bronze DAGs emit this same URI so Silver is
 # triggered regardless of which league just finished.
@@ -72,19 +69,12 @@ DEFAULT_ARGS = {
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _get_conn():
-    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    conn = hook.get_conn()
-    conn.autocommit = False
-    return conn
+_get_conn = get_pg_conn
 
 
 def _minio_kwargs() -> dict:
-    return {
-        "minio_endpoint": MINIO_ENDPOINT,
-        "minio_access_key": MINIO_ACCESS_KEY,
-        "minio_secret_key": MINIO_SECRET_KEY,
-    }
+    # Resolved at task runtime; raises if MINIO_ACCESS_KEY/SECRET_KEY are unset.
+    return get_minio_settings()
 
 
 def _dag_id(league_key: str) -> str:
@@ -127,6 +117,7 @@ def _create_bronze_dag(league_key: str):
         catchup=False,
         max_active_runs=1,
         default_args=DEFAULT_ARGS,
+        on_failure_callback=pipeline_failure_notifier,
         tags=["lakehouse", "bronze", "multi-liga", league_key.lower().replace(" ", "-")],
         doc_md=f"Bronze extraction for **{league_key}**.\n\n{__doc__}",
     )
@@ -137,14 +128,14 @@ def _create_bronze_dag(league_key: str):
         # ------------------------------------------------------------------
         @task(task_id="get_season_and_mark_started")
         def get_season_and_mark_started() -> dict[str, Any]:
-            ensure_season_control_table(_get_conn)
-            season_row = get_pending_season(_get_conn, league_key, stage="bronze")
+            # Atomically claim the next pending season (FOR UPDATE SKIP LOCKED).
+            # Table is provisioned by migration 001 (no runtime DDL).
+            season_row = claim_next_season(_get_conn, league_key, stage="bronze")
             if season_row is None:
                 LOGGER.info(
                     "[%s] No pending season for stage=bronze. Nothing to do.", dag_id
                 )
-                return {}
-            mark_stage_started(_get_conn, season_row["id"], stage="bronze")
+                raise AirflowSkipException("No pending season for bronze")
             LOGGER.info(
                 "[%s] Bronze starting for season=%s (id=%s)",
                 dag_id, season_row["season"], season_row["id"],
@@ -156,21 +147,28 @@ def _create_bronze_dag(league_key: str):
             }
 
         # ------------------------------------------------------------------
-        # Task 2: Extract schedule → returns game_map
+        # Task 2: Extract schedule → writes game_map.json to MinIO
         # ------------------------------------------------------------------
         @task(task_id="extract_schedule", on_failure_callback=_on_extraction_failure)
         def extract_schedule(season_info: dict[str, Any]) -> dict[str, Any]:
             if not season_info or not season_info.get("season"):
                 return {}
-            result = extract_schedule_to_minio(
+            # Custom OTel span (no-op unless tracing is enabled) — example of
+            # instrumenting the slow ESPN extraction step.
+            with otel_span(
+                "espn.read_schedule",
                 league_key=league_key,
-                season=season_info["season"],
-                **_minio_kwargs(),
-            )
+                season=int(season_info["season"]),
+            ):
+                result = extract_schedule_to_minio(
+                    league_key=league_key,
+                    season=season_info["season"],
+                    **_minio_kwargs(),
+                )
             LOGGER.info(
                 "[%s] Schedule: season=%s rows=%s games=%s (%.2fs)",
                 dag_id, season_info["season"],
-                result["schedule_rows"], len(result.get("game_map", {})),
+                result["schedule_rows"], result.get("game_count", 0),
                 result["elapsed_seconds"],
             )
             return result
@@ -198,7 +196,7 @@ def _create_bronze_dag(league_key: str):
             return result
 
         # ------------------------------------------------------------------
-        # Task 4: Extract lineup (needs game_map from schedule)
+        # Task 4: Extract lineup (reads game_map.json from MinIO)
         # ------------------------------------------------------------------
         @task(task_id="extract_lineup", on_failure_callback=_on_extraction_failure)
         def extract_lineup(
@@ -206,12 +204,11 @@ def _create_bronze_dag(league_key: str):
             sched: dict[str, Any],
             _ms: dict[str, Any],
         ) -> dict[str, Any]:
-            if not season_info or not season_info.get("season") or not sched.get("game_map"):
+            if not season_info or not season_info.get("season") or not sched.get("game_count"):
                 return {}
             result = extract_lineup_to_minio(
                 league_key=league_key,
                 season=season_info["season"],
-                game_map=sched["game_map"],
                 **_minio_kwargs(),
             )
             LOGGER.info(
@@ -230,12 +227,11 @@ def _create_bronze_dag(league_key: str):
             sched: dict[str, Any],
             _lu: dict[str, Any],
         ) -> dict[str, Any]:
-            if not season_info or not season_info.get("season") or not sched.get("game_map"):
+            if not season_info or not season_info.get("season") or not sched.get("game_count"):
                 return {}
             result = extract_events_to_minio(
                 league_key=league_key,
                 season=season_info["season"],
-                game_map=sched["game_map"],
                 **_minio_kwargs(),
             )
             LOGGER.info(

@@ -1,0 +1,94 @@
+# Observability stack: OTel Collector + Prometheus + Grafana + exporters.
+# Brought up separately from the data infra:  make obs-up
+# Joins the external datalake-network so it can scrape MinIO and the Spark driver.
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"    # OTLP gRPC (Airflow metrics + traces export here)
+      - "4318:4318"    # OTLP HTTP
+      - "8889:8889"    # Prometheus exposition (scraped by Prometheus)
+    networks: [datalake-network]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach the host-native Postgres
+    networks: [datalake-network]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      # Passed through to the provisioned PostgreSQL datasource (datasources.yml).
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [datalake-network]
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+  # DB-level metrics for the host-native PostgreSQL (Airflow metadata + control plane).
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: ${PG_EXPORTER_DSN:-postgresql://postgres:postgres@host.docker.internal:5432/futebol-dados?sslmode=disable}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [datalake-network]
+    restart: unless-stopped
+
+  # Reads Spark event logs from MinIO so each Silver/Gold run is inspectable
+  # after the ephemeral jupyter-spark container stops. Requires Spark eventLog
+  # enabled (see infra/observability/README.md).
+  spark-history:
+    image: jupyter/pyspark-notebook:latest
+    container_name: spark-history
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+    command: >
+      bash -c "/usr/local/spark/sbin/start-history-server.sh
+      --properties-file /dev/stdin <<< '
+      spark.history.fs.logDirectory=s3a://datalake-artifacts/spark-events
+      spark.hadoop.fs.s3a.endpoint=http://minio:9000
+      spark.hadoop.fs.s3a.path.style.access=true
+      spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.EnvironmentVariableCredentialsProvider'
+      && tail -f /usr/local/spark/logs/*"
+    ports:
+      - "18080:18080"
+    networks: [datalake-network]
+    restart: unless-stopped
+    profiles: ["history"]   # opt-in; needs Spark eventLog turned on first
+
+networks:
+  datalake-network:
+    external: true
+
+volumes:
+  prometheus-data:
+  grafana-data:

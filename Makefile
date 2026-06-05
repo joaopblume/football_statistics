@@ -13,7 +13,10 @@ help:
 	@echo "  make logs-minio    - Follow the MinIO server logs"
 	@echo "  make airflow-install-services - (Linux only) Installs Airflow systemd services"
 	@echo "  make airflow-up    - Starts Airflow API server and scheduler via systemd"
+	@echo "  make airflow-setup-pools - Create the size-1 'spark_notebook' pool (one-time)"
 	@echo "  make airflow-down  - Stops Airflow services"
+	@echo "  make obs-up        - Start observability stack (Prometheus + Grafana + OTel)"
+	@echo "  make obs-down      - Stop the observability stack"
 	@echo "  make logs-airflow  - Follow Airflow systemd logs"
 
 # Target to start the infrastructure
@@ -66,6 +69,13 @@ airflow-up:
 	sudo systemctl start airflow-api-server airflow-scheduler airflow-dag-processor
 	@echo "Airflow is running! View logs with: make logs-airflow"
 
+# One-time: create the size-1 pool that serializes Silver/Gold Spark notebooks
+# across DAGs (both drive the single jupyter-spark container).
+airflow-setup-pools:
+	/root/airflow/venv/bin/airflow pools set spark_notebook 1 \
+		"Serialize Silver/Gold Spark notebook execution (shared jupyter-spark container)"
+	@echo "Pool 'spark_notebook' (size 1) ensured."
+
 airflow-down:
 	@echo "Stopping Airflow services..."
 	sudo systemctl stop airflow-api-server airflow-scheduler airflow-dag-processor
@@ -74,3 +84,18 @@ airflow-down:
 logs-airflow:
 	@echo "Following logs for Airflow Scheduler, API Server, and DAG Processor..."
 	sudo journalctl -u airflow-scheduler -u airflow-api-server -u airflow-dag-processor -f
+
+# ==========================================================
+# Observability stack (OTel Collector + Prometheus + Grafana)
+# ==========================================================
+
+obs-up:
+	@echo "Starting observability stack (Grafana http://localhost:3000)..."
+	cd infra/observability && docker compose up -d
+	@echo "Prometheus: http://localhost:9090  |  Grafana: http://localhost:3000"
+
+obs-down:
+	cd infra/observability && docker compose down
+
+logs-obs:
+	cd infra/observability && docker compose logs -f

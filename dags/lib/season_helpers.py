@@ -4,9 +4,9 @@ The season control table is the single source of truth for which seasons
 the pipeline should process and what stage each is at.  DAGs call these
 helpers instead of using hardcoded SEASON constants.
 
-Connection pattern follows ingestion_helpers.py: callers pass a zero-argument
-callable (get_conn_fn) that returns a psycopg2 connection with autocommit=False.
-This keeps the helpers Airflow-agnostic and fully unit-testable.
+Connection pattern: callers pass a zero-argument callable (get_conn_fn) that
+returns a psycopg2 connection with autocommit=False. This keeps the helpers
+Airflow-agnostic and fully unit-testable.
 
 Status lifecycle:
     pending
@@ -185,6 +185,92 @@ def get_pending_season(
 
 
 # ---------------------------------------------------------------------------
+# Atomic claim (concurrency-safe)
+# ---------------------------------------------------------------------------
+
+def claim_next_season(
+    get_conn_fn,
+    league_key: str | None,
+    stage: str,
+) -> dict[str, Any] | None:
+    """Atomically select the next eligible season for *stage* and mark it running.
+
+    Combines the read (``get_pending_season``) and the write (``mark_stage_started``)
+    into a SINGLE transaction using ``SELECT ... FOR UPDATE SKIP LOCKED``, so two
+    concurrent DAG runs can never claim the same row (the second skips the locked
+    row and either picks the next eligible season or gets ``None``).
+
+    Eligibility matches ``get_pending_season``: the row's status equals the
+    stage prerequisite, OR it previously failed at this stage.
+
+    Returns ``{id, league_key, season, status}`` (status is the *pre-claim*
+    status) after transitioning the row to the stage's running status and
+    clearing any prior error, or ``None`` if nothing is eligible.
+    """
+    if stage not in _STAGE_META:
+        raise ValueError(f"Unknown stage: {stage!r}. Must be one of {list(_STAGE_META)}")
+
+    prerequisite_status = _STAGE_PREREQUISITE[stage]
+    running_status, _, started_col, _ = _STAGE_META[stage]
+
+    league_clause = "AND league_key = %s" if league_key is not None else ""
+    params: list = []
+    if league_key is not None:
+        params.append(league_key)
+    params.extend([prerequisite_status, stage])
+
+    conn = get_conn_fn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, league_key, season, status
+                FROM pipeline_season_control
+                WHERE 1=1
+                  {league_clause}
+                  AND (
+                      status = %s
+                      OR (status = 'failed' AND last_error_stage = %s)
+                  )
+                ORDER BY season DESC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            if row is None:
+                conn.commit()  # release the (empty) transaction
+                LOGGER.info(
+                    "claim_next_season: no eligible season for stage=%s league=%s",
+                    stage, league_key or "ANY",
+                )
+                return None
+
+            season_id = row[0]
+            cur.execute(
+                f"""
+                UPDATE pipeline_season_control
+                SET status           = %s,
+                    {started_col}    = NOW(),
+                    last_error       = NULL,
+                    last_error_stage = NULL
+                WHERE id = %s
+                """,
+                (running_status, season_id),
+            )
+        conn.commit()
+        result = {"id": row[0], "league_key": row[1], "season": row[2], "status": row[3]}
+        LOGGER.info(
+            "claim_next_season: claimed season=%s league=%s (id=%s) for stage=%s → %s",
+            result["season"], result["league_key"], result["id"], stage, running_status,
+        )
+        return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
 
@@ -291,5 +377,51 @@ def mark_stage_failed(
         LOGGER.error(
             "mark_stage_failed: id=%s stage=%s error=%s", season_id, stage, error[:200]
         )
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Refresh (re-pull live seasons)
+# ---------------------------------------------------------------------------
+
+def requeue_latest_complete_seasons(get_conn_fn) -> list[dict[str, Any]]:
+    """Re-queue the most recent COMPLETE season of each league back to 'pending'.
+
+    A season is terminal once ``complete``, but a *live* season keeps gaining
+    matches week to week. This resets only the highest ``season`` per league
+    that is currently ``complete`` (never one mid-pipeline) so the next Bronze
+    run re-extracts it and the data flows through Silver/Gold again.
+
+    Returns the list of ``{league_key, season}`` rows that were re-queued.
+    """
+    conn = get_conn_fn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (league_key) id
+                    FROM pipeline_season_control
+                    WHERE status = 'complete'
+                    ORDER BY league_key, season DESC
+                )
+                UPDATE pipeline_season_control p
+                SET status           = 'pending',
+                    last_error       = NULL,
+                    last_error_stage = NULL
+                FROM latest
+                WHERE p.id = latest.id
+                RETURNING p.league_key, p.season
+                """
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        result = [{"league_key": r[0], "season": r[1]} for r in rows]
+        LOGGER.info(
+            "requeue_latest_complete_seasons: re-queued %d season(s): %s",
+            len(result), result,
+        )
+        return result
     finally:
         conn.close()

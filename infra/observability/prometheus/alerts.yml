@@ -1,0 +1,30 @@
+groups:
+  - name: minio-alerts
+    rules:
+      # From the MinIO docs — alert when nodes/disks go offline.
+      - alert: MinioNodesOffline
+        expr: avg_over_time(minio_cluster_nodes_offline_total{job="minio-cluster"}[5m]) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "MinIO node(s) offline"
+          description: "Node(s) in {{ $labels.instance }} offline for >5m."
+      - alert: MinioDisksOffline
+        expr: avg_over_time(minio_cluster_drive_offline_total{job="minio-cluster"}[5m]) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "MinIO disk(s) offline"
+          description: "Disk(s) in {{ $labels.instance }} offline for >5m."
+
+  - name: pipeline-alerts
+    rules:
+      # Example using Airflow OTel metrics (names depend on your Airflow version;
+      # verify against the otel-collector job once metrics flow). Adjust as needed.
+      - alert: AirflowDagRunsFailing
+        expr: increase(airflow_dagrun_failed_total[1h]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Airflow DAG run failures in the last hour"
+          description: "One or more DAG runs failed — check the scheduler/logs."

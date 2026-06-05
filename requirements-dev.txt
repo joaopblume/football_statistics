@@ -1,0 +1,17 @@
+# Development & test dependencies. Installs runtime deps too.
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+
+# --- Testing ---
+pytest==8.3.5
+pytest-xdist==3.6.1            # parallel test execution
+pytest-rerunfailures==15.1    # retry flaky tests
+
+# --- Linting ---
+ruff==0.15.4
+
+# NOTE: the previous requirements.txt also pinned a Selenium/seleniumbase
+# browser-automation stack (selenium, seleniumbase, mycdp, trio, pyotp, …)
+# that is unrelated to this data pipeline (it injects the "Linux uses
+# --headless" banner into pytest output). It is intentionally NOT declared
+# here; it remains captured in requirements.lock.txt for exact reproduction.

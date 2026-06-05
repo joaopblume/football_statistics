@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Airflow metrics + traces arrive via OTLP and are re-exposed here.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # MinIO cluster + bucket metrics. Requires MINIO_PROMETHEUS_AUTH_TYPE=public
+  # on the MinIO server (set in infra/minio/docker-compose.yaml), otherwise a
+  # bearer token is needed (mc admin prometheus generate).
+  - job_name: minio-cluster
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
+
+  - job_name: minio-bucket
+    metrics_path: /minio/v2/metrics/bucket
+    static_configs:
+      - targets: ["minio:9000"]
+
+  # PostgreSQL (Airflow metadata DB + pipeline control plane).
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # Spark driver metrics on the *persistent* jupyter-spark container (used by
+  # the iceberg_maintenance DAG / dev). The Silver/Gold jobs now run as ephemeral
+  # `docker run` containers with random names, so they are NOT scraped here —
+  # their observability is the Spark History Server (event logs in MinIO).
+  - job_name: spark-driver
+    metrics_path: /metrics/prometheus
+    static_configs:
+      - targets: ["jupyter-spark:4040"]

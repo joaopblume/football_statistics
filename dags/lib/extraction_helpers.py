@@ -4,64 +4,17 @@ import json
 import logging
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import pendulum
-import requests
 
 # Module-level logger
 LOGGER = logging.getLogger(__name__)
 
-# Base URL for the ESPN public API (athletes endpoint)
-ESPN_ATHLETE_API = (
-    "http://site.api.espn.com/apis/common/v3/sports/soccer/{league}/athletes/{athlete_id}"
-)
-
-# Default delay between ESPN API calls to avoid rate limiting (seconds)
-DEFAULT_API_DELAY = 0.5
-
 
 # ---------------------------------------------------------------------------
-# General-purpose helpers (moved from DAG files)
+# General-purpose helpers
 # ---------------------------------------------------------------------------
-
-def ensure_brasileirao_mapping(league_key: str = "BRA-Brasileirao") -> None:
-    """Backwards-compat alias — delegates to league_config.ensure_league_mapping."""
-    from lib.league_config import ensure_league_mapping
-    ensure_league_mapping(league_key)
-
-
-def slug(value: str) -> str:
-    """Convert an arbitrary string into a filesystem-safe slug.
-
-    Replaces non-alphanumeric characters with underscores, strips leading/
-    trailing underscores, and lowercases everything.  Returns ``"unknown"``
-    for empty results.
-    """
-    # Replace any non-alphanumeric character with underscore
-    result = re.sub(r"[^a-zA-Z0-9]+", "_", str(value)).strip("_").lower()
-    # Fallback if the result is empty
-    return result or "unknown"
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Serialize *payload* as formatted JSON to *path*, creating parent dirs."""
-    # Ensure parent directories exist
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write the JSON with readable indentation
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, default=str, indent=2)
-
-
-def write_csv(path: Path, df: pd.DataFrame) -> None:
-    """Write a DataFrame to CSV at *path*, creating parent dirs."""
-    # Ensure parent directories exist
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write CSV without the pandas index column
-    df.to_csv(path, index=False)
-
 
 def _to_json_str(df: pd.DataFrame) -> str:
     """Serialize a DataFrame to a compact JSON string (records orient, ISO dates)."""
@@ -83,32 +36,6 @@ def _make_s3_client(endpoint: str, access_key: str, secret_key: str):
         aws_secret_access_key=secret_key,
         region_name="us-east-1",
     )
-
-
-def build_queue_message(
-    entity_type: str,
-    entity_id: str | int,
-    payload_format: str,
-    path: str,
-    provider: str,
-    league: str,
-    season: int,
-) -> dict[str, Any]:
-    """Build a standardized queue message dict for pending.jsonl.
-
-    All queue messages share the same shape so downstream ingestion
-    can process them uniformly.
-    """
-    return {
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "payload_format": payload_format,
-        "path": str(path),
-        "provider": provider,
-        "league": league,
-        "season": season,
-        "created_at": pendulum.now("UTC").to_iso8601_string(),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -257,94 +184,7 @@ def _parse_clock_minute(event: dict[str, Any]) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# ESPN athlete profile fetching
-# ---------------------------------------------------------------------------
-
-def fetch_player_profile(
-    athlete_id: int,
-    league_espn_key: str,
-    delay: float = DEFAULT_API_DELAY,
-) -> dict[str, Any] | None:
-    """Fetch a player profile from the ESPN athlete API.
-
-    Parameters
-    ----------
-    athlete_id : int
-        ESPN athlete numeric ID.
-    league_espn_key : str
-        ESPN league key, e.g. ``"bra.1"``.
-    delay : float
-        Seconds to sleep after the request (rate limiting).
-
-    Returns
-    -------
-    dict or None
-        The parsed profile dict, or None if the request failed.
-    """
-    url = ESPN_ATHLETE_API.format(league=league_espn_key, athlete_id=athlete_id)
-    LOGGER.info("Fetching player profile: athlete_id=%s url=%s", athlete_id, url)
-
-    try:
-        # Make the HTTP GET request to ESPN's public API
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        raw = response.json()
-
-        # Extract the nested athlete object
-        athlete = raw.get("athlete", {})
-
-        # Build a flattened profile dict with the fields we care about
-        profile: dict[str, Any] = {
-            "espn_athlete_id": int(athlete.get("id", athlete_id)),
-            "espn_guid": athlete.get("guid"),
-            "first_name": athlete.get("firstName"),
-            "last_name": athlete.get("lastName"),
-            "display_name": athlete.get("displayName"),
-            "full_name": athlete.get("fullName"),
-            "jersey": athlete.get("jersey"),
-            "position_id": athlete.get("position", {}).get("id"),
-            "position_name": athlete.get("position", {}).get("name"),
-            "team_id": athlete.get("team", {}).get("id"),
-            "team_name": athlete.get("team", {}).get("displayName"),
-            "date_of_birth": athlete.get("displayDOB"),
-            "age": athlete.get("age"),
-            "gender": athlete.get("gender"),
-            "is_active": athlete.get("active"),
-            "profile_url": _extract_profile_url(athlete),
-            # Keep the full raw response for future use
-            "_raw": raw,
-        }
-
-        LOGGER.info(
-            "Profile fetched: athlete_id=%s name=%s",
-            athlete_id,
-            profile.get("display_name"),
-        )
-        return profile
-
-    except requests.RequestException as exc:
-        LOGGER.warning(
-            "Failed to fetch profile for athlete_id=%s: %s", athlete_id, exc
-        )
-        return None
-    finally:
-        # Rate-limit: sleep after each call regardless of success/failure
-        if delay > 0:
-            time.sleep(delay)
-
-
-def _extract_profile_url(athlete: dict[str, Any]) -> str | None:
-    """Extract the ESPN player card URL from the athlete links array."""
-    for link in athlete.get("links", []):
-        # Look for the playercard / overview link
-        rels = link.get("rel", [])
-        if "playercard" in rels or "overview" in rels:
-            return link.get("href")
-    return None
-
-
-# ---------------------------------------------------------------------------
-# ESPN summary JSON cache constants (mirrors brasileirao_teams_to_pg.py)
+# ESPN summary JSON cache constants
 # ---------------------------------------------------------------------------
 
 # URL template for ESPN match summary API
@@ -538,20 +378,23 @@ def extract_schedule_to_minio(
     league_key: str,
     season: int,
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch the season schedule from ESPN and upload schedule.json to MinIO.
 
+    Also writes ``game_map.json`` ({game_name: game_id}) to the same MinIO
+    prefix so downstream lineup/events tasks read it from object storage rather
+    than carrying a per-season dict through Airflow XCom (the metadata DB).
+
     Returns
     -------
     dict
-        ``{schedule_rows, game_map, bronze_base, elapsed_seconds}``
-        where *game_map* is ``{game_name: game_id}`` — a serializable dict
-        that downstream tasks use to correlate lineup/events with game IDs.
+        ``{schedule_rows, game_count, bronze_base, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
@@ -571,25 +414,43 @@ def extract_schedule_to_minio(
         }
 
     bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
-    schedule_key = f"{bronze_base}/schedule.json"
     s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
-    s3.put_object(Bucket=raw_bucket, Key=schedule_key, Body=_to_json_str(schedule))
-    LOGGER.info("Uploaded schedule to s3://%s/%s", raw_bucket, schedule_key)
+    s3.put_object(Bucket=raw_bucket, Key=f"{bronze_base}/schedule.json", Body=_to_json_str(schedule))
+    LOGGER.info("Uploaded schedule to s3://%s/%s/schedule.json", raw_bucket, bronze_base)
+
+    # Persist game_map to MinIO (not XCom) so downstream tasks read it from the
+    # object store instead of the Airflow metadata DB.
+    s3.put_object(
+        Bucket=raw_bucket,
+        Key=f"{bronze_base}/game_map.json",
+        Body=json.dumps(game_map, ensure_ascii=False),
+    )
+    LOGGER.info(
+        "Uploaded game_map (%d games) to s3://%s/%s/game_map.json",
+        len(game_map), raw_bucket, bronze_base,
+    )
 
     return {
         "schedule_rows": len(schedule),
-        "game_map": game_map,
+        "game_count": len(game_map),
         "bronze_base": bronze_base,
         "elapsed_seconds": round(time.perf_counter() - t0, 2),
     }
+
+
+def _load_game_map(s3, raw_bucket: str, bronze_base: str) -> dict[str, int]:
+    """Load the {game_name: game_id} map that ``extract_schedule_to_minio``
+    wrote to ``{bronze_base}/game_map.json`` in MinIO."""
+    obj = s3.get_object(Bucket=raw_bucket, Key=f"{bronze_base}/game_map.json")
+    return json.loads(obj["Body"].read())
 
 
 def extract_matchsheet_to_minio(
     league_key: str,
     season: int,
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch per-match team stats from ESPN and upload matchsheet.json to MinIO.
@@ -603,6 +464,7 @@ def extract_matchsheet_to_minio(
         ``{matchsheet_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
@@ -628,22 +490,16 @@ def extract_matchsheet_to_minio(
 def extract_lineup_to_minio(
     league_key: str,
     season: int,
-    game_map: dict[str, int],
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch per-player lineup data from ESPN and upload lineup.json to MinIO.
 
     Calls ``read_lineup()`` (which also caches ESPN summary JSONs to disk),
     then enriches the result with ``athlete_id`` via ``_build_enriched_lineup``.
-
-    Parameters
-    ----------
-    game_map : dict[str, int]
-        Mapping of game name → game_id, as returned by
-        ``extract_schedule_to_minio``.
+    The game_map is read from MinIO (written by ``extract_schedule_to_minio``).
 
     Returns
     -------
@@ -651,6 +507,7 @@ def extract_lineup_to_minio(
         ``{lineup_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
@@ -660,8 +517,12 @@ def extract_lineup_to_minio(
     sd_lineup = reader.read_lineup().reset_index()
     LOGGER.info("read_lineup: %s rows in %.2fs", len(sd_lineup), time.perf_counter() - t0)
 
-    # Reconstruct a minimal schedule DataFrame from game_map so
-    # _build_enriched_lineup can correlate summary JSONs with games.
+    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
+    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
+
+    # Read game_map from MinIO (not XCom) and reconstruct a minimal schedule
+    # DataFrame so _build_enriched_lineup can correlate summary JSONs with games.
+    game_map = _load_game_map(s3, raw_bucket, bronze_base)
     schedule_slim = pd.DataFrame(
         [{"game": g, "game_id": gid} for g, gid in game_map.items()]
     )
@@ -670,11 +531,8 @@ def extract_lineup_to_minio(
     lineup = _build_enriched_lineup(schedule_slim, sd_lineup, reader, league_key, season)
     LOGGER.info("_build_enriched_lineup: %s rows in %.2fs", len(lineup), time.perf_counter() - te)
 
-    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
-    lineup_key = f"{bronze_base}/lineup.json"
-    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
-    s3.put_object(Bucket=raw_bucket, Key=lineup_key, Body=_to_json_str(lineup))
-    LOGGER.info("Uploaded lineup to s3://%s/%s", raw_bucket, lineup_key)
+    s3.put_object(Bucket=raw_bucket, Key=f"{bronze_base}/lineup.json", Body=_to_json_str(lineup))
+    LOGGER.info("Uploaded lineup to s3://%s/%s/lineup.json", raw_bucket, bronze_base)
 
     return {
         "lineup_rows": len(lineup),
@@ -685,22 +543,16 @@ def extract_lineup_to_minio(
 def extract_events_to_minio(
     league_key: str,
     season: int,
-    game_map: dict[str, int],
     minio_endpoint: str = "http://minio:9000",
-    minio_access_key: str = "minioadmin",
-    minio_secret_key: str = "minioadmin123",
+    minio_access_key: str | None = None,
+    minio_secret_key: str | None = None,
     raw_bucket: str = "datalake-raw",
 ) -> dict[str, Any]:
     """Fetch match events (goals, cards, subs) from ESPN and upload events.json.
 
     ``read_events()`` may not be available for every ESPN league/season;
     failures are treated as non-fatal — an empty array is uploaded instead.
-
-    Parameters
-    ----------
-    game_map : dict[str, int]
-        Mapping of game name → game_id, as returned by
-        ``extract_schedule_to_minio``.
+    The game_map is read from MinIO (written by ``extract_schedule_to_minio``).
 
     Returns
     -------
@@ -708,12 +560,18 @@ def extract_events_to_minio(
         ``{events_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
     ensure_league_mapping(league_key)
     reader = sd.ESPN(leagues=league_key, seasons=season)
 
+    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
+    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
+
+    # Read game_map from MinIO (not XCom) to attach game_id to each event.
+    game_map = _load_game_map(s3, raw_bucket, bronze_base)
     schedule_slim = pd.DataFrame(
         [{"game": g, "game_id": gid} for g, gid in game_map.items()]
     )
@@ -726,11 +584,8 @@ def extract_events_to_minio(
         LOGGER.warning("read_events failed (non-fatal): %s — events.json will be empty", exc)
         events = pd.DataFrame()
 
-    bronze_base = f"espn/{get_league_slug(league_key)}/{season}"
-    events_key = f"{bronze_base}/events.json"
-    s3 = _make_s3_client(minio_endpoint, minio_access_key, minio_secret_key)
-    s3.put_object(Bucket=raw_bucket, Key=events_key, Body=_to_json_str(events))
-    LOGGER.info("Uploaded events to s3://%s/%s", raw_bucket, events_key)
+    s3.put_object(Bucket=raw_bucket, Key=f"{bronze_base}/events.json", Body=_to_json_str(events))
+    LOGGER.info("Uploaded events to s3://%s/%s/events.json", raw_bucket, bronze_base)
 
     return {
         "events_rows": len(events),

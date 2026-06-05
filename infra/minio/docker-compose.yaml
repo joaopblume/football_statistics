@@ -13,12 +13,15 @@ services:
       # Web console port (used for manual GUI administration)
       - "9001:9001"
     environment:
-      # Root user (functionally equivalent to an AWS Access Key)
-      MINIO_ROOT_USER: minioadmin
-      # Root password (functionally equivalent to an AWS Secret Key)
-      MINIO_ROOT_PASSWORD: minioadmin123
+      # Root user / password — read from the environment (.env) with local-dev
+      # defaults. Override in any real deployment; do not rely on these defaults.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       # Set a default region to prevent errors from strict AWS S3 client libraries
       MINIO_REGION_NAME: us-east-1
+      # Allow Prometheus to scrape /minio/v2/metrics/* without a bearer token
+      # (local dev). Remove/secure this in production.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     volumes:
       # Persist data locally so buckets and objects are not lost upon container restart
       - ./minio-data:/data
@@ -26,6 +29,13 @@ services:
       - datalake-network
     # Ensure the container automatically restarts on failure or system reboot
     restart: unless-stopped
+    # Liveness probe so dependents can wait for MinIO to be ready
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
     # Cap memory: MinIO is lightweight for this workload (small JSON files)
     deploy:
       resources:
@@ -41,13 +51,14 @@ services:
     # Assign a predictable container name
     container_name: minio-mc
     depends_on:
-      # Ensure the MinIO container starts before this initialization script runs
-      - minio
+      # Wait until MinIO is healthy before initializing buckets
+      minio:
+        condition: service_healthy
     # Execute a shell script to robustly initialize the connection and create buckets
     entrypoint: |
       /bin/sh -c '
       # Keep attempting to set the alias until it succeeds
-      until mc alias set local http://minio:9000 minioadmin minioadmin123; do
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123}; do
         echo "Waiting for MinIO server to initialize..."
         sleep 2
       done
