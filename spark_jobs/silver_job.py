@@ -255,8 +255,17 @@ if "athlete_id" in df_player_match.columns:
     checks.append({"check_name": "athlete_id_coverage", "status": "pass" if _cov >= 0.8 else "warn",
                    "details": f"coverage={_cov:.3f}"})
 
+# Great Expectations — the declarative DQ engine (system of record). Its results
+# merge into the same report → pipeline_quality_checks, and a GE 'fail' aborts.
+from ge_suites import run_ge_validation  # noqa: E402
+
+checks.extend(run_ge_validation(spark, {
+    "teams": df_teams, "players": df_players,
+    "match_statistics": df_match_stats, "player_match_stats": df_player_match,
+}))
+
 for _c in checks:
-    print(f"  [{_c['status'].upper():4}] {_c['check_name']:32} {_c['details']}")
+    print(f"  [{_c['status'].upper():4}] {_c['check_name']:40} {_c['details']}")
 
 _report = {"league": LEAGUE_KEY, "season": SEASON, "stage": "silver", "checks": checks}
 _uri = f"s3a://datalake-warehouse/quality/silver/{LEAGUE_SLUG}/{SEASON}/report.json"
