@@ -4,10 +4,6 @@ A complete, end-to-end report on the `football_statistics` data platform: what i
 is, the data it holds, the technologies and techniques in each layer, how every
 piece works, and how to operate it and retrieve the data.
 
-> Companion docs: [`DataEngineer.MD`](./DataEngineer.MD) (architecture review),
-> [`DataEngineer-Progress.md`](./DataEngineer-Progress.md) (change tracker),
-> [`DataEngineer-Testing.md`](./DataEngineer-Testing.md) (how to verify).
-
 ---
 
 ## 1. What this platform is
@@ -333,7 +329,6 @@ infra/
   minio/ postgres/ airflow/  compose, migrations, systemd units
   observability/             OTel + Prometheus + Grafana + exporters + dashboard
 tests/                     unit tests (mock psycopg2; no infra needed)
-DataEngineer*.md           review, progress tracker, testing notes
 ```
 
 ---
@@ -341,7 +336,7 @@ DataEngineer*.md           review, progress tracker, testing notes
 ## 15. What's intentionally deferred
 
 SCD-2 / full star schema; OpenLineage → Marquez UI; GE Data Docs → MinIO; per-run
-Iceberg snapshot-delta recording. (See `DataEngineer-Progress.md`.)
+Iceberg snapshot-delta recording.
 
 ---
 

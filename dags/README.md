@@ -26,12 +26,17 @@ O pipeline segue a arquitetura Medallion, com DAGs desacoplados via `Dataset`
    por liga (`bronze_extraction__<liga>`, `@hourly`). Extrai schedule → matchsheet
    → lineup → events do ESPN (via `soccerdata`) e sobe os JSONs para o MinIO
    (`datalake-raw`). Emite o `Dataset` Bronze compartilhado.
-2. **Silver** (`brasileirao_silver_processing.py`): disparado pelo `Dataset` Bronze.
-   Sobe o container Spark, executa o notebook Silver (tabelas Iceberg `teams`,
-   `players`, `match_statistics`, `player_match_stats`) com *quality gates* reais
-   que abortam antes de gravar se os dados estiverem ruins, e emite o `Dataset` Silver.
-3. **Gold** (`brasileirao_gold_processing.py`): disparado pelo `Dataset` Silver.
-   Agrega `player_season_stats`.
+2. **Silver** (`spark_stage_dag.py` — `silver_processing`): disparado pelo `Dataset`
+   Bronze. Executa `docker run --rm football-spark spark-submit /jobs/silver_job.py`
+   (container efêmero). Escreve as tabelas Iceberg `teams`, `players`,
+   `match_statistics`, `player_match_stats`, `match_events` com *measured gates* +
+   Great Expectations antes do write. Emite o `Dataset` Silver.
+3. **Gold** (`spark_stage_dag.py` — `gold_processing`): disparado pelo `Dataset`
+   Silver. Container efêmero executa `gold_job.py` e agrega `player_season_stats`.
+4. **Manutenção** (`iceberg_maintenance.py`, `@weekly`): `rewrite_data_files` +
+   `expire_snapshots` em todas as tabelas Silver/Gold.
+5. **Refresh** (`pipeline_season_refresh.py`, `@weekly`): re-fila a season mais
+   recente de cada liga (para capturar jogos adicionados ao longo da temporada).
 
 O estado de cada season (`pending → bronze_running → … → complete | failed`) vive
 em `pipeline_season_control`; os helpers em `lib/season_helpers.py` leem/atualizam
@@ -47,14 +52,16 @@ essa tabela, permitindo **retry incremental a partir do stage que falhou**.
 dags/
 ├── lib/                              # Lógica isolada e testável
 │   ├── __init__.py
+│   ├── airflow_common.py            # get_pg_conn, SPARK_POOL, notifiers, otel_span
 │   ├── extraction_helpers.py        # soccerdata/ESPN → DataFrames → MinIO (Bronze)
 │   ├── league_config.py             # Registro de ligas + mapeamentos ESPN
 │   ├── minio_config.py              # Resolução de credenciais MinIO (sem segredos no código)
 │   ├── season_helpers.py            # Control plane (pipeline_season_control)
-│   └── quality_helpers.py           # Registro de quality checks
-├── brasileirao_bronze_extraction.py # Factory: 1 DAG Bronze por liga
-├── brasileirao_silver_processing.py # Bronze → Silver (Iceberg + quality gates)
-└── brasileirao_gold_processing.py   # Silver → Gold (Iceberg)
+│   └── quality_helpers.py           # Registro de quality checks no Postgres
+├── brasileirao_bronze_extraction.py # Factory: 1 DAG Bronze por liga (@hourly)
+├── spark_stage_dag.py               # Factory: silver_processing + gold_processing (ephemeral Spark)
+├── iceberg_maintenance.py           # @weekly: rewrite + expire snapshots
+└── pipeline_season_refresh.py       # @weekly: re-fila a season mais recente
 ```
 
 ## Como Adicionar/Modificar Lógica
