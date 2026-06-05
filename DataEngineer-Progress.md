@@ -15,11 +15,11 @@
 | 2 | 🟠 High | 3 | 3 ✅ |
 | 3 | 🟡 Medium | 4 | 4 ✅ (M1 superseded, M5 deferred) |
 | 4 | 🟢 Low / hygiene | 10 | 10 ✅ |
-| 5 | 📈 Observability (§4 / C3) | 0 | 6 |
-| 6 | Wrap-up | 0 | 1 |
+| 5 | 📈 Observability (§4 / C3) | 6 | 6 ✅ (live bring-up deferred) |
+| 6 | Wrap-up | 1 | 1 ✅ |
 | — | Deferred (tracked) | — | 6 |
 
-_Last updated: Wave 4 (Low/hygiene) complete — L1–L9 + §6a done. Full Bronze→Silver→Gold re-verified live for ITA + BRA before this wave; Silver re-verified after the L5 refactor. 78 unit tests passing; ruff clean; CI added._
+_Last updated: Wave 5 (Observability) complete — full stack + Airflow/Spark/MinIO/Postgres wiring + Iceberg maintenance DAG (verified live). Live stack bring-up deferred. All planned waves (0–5) done; only the explicitly-deferred backlog remains. 78 unit tests; ruff clean._
 
 ## Live verification findings (running the actual pipelines)
 
@@ -114,19 +114,19 @@ Running the real Airflow DAGs end-to-end (per user request) surfaced bugs that u
 
 New `infra/observability/` stack: `docker-compose.yaml` (otel-collector + prometheus + grafana + postgres_exporter + spark-history-server) + scrape/alert configs + starter dashboard.
 
-- [ ] **4.A — Airflow** OTel `[metrics]`/`[traces]` config + failure **notifier** (SMTP/Slack) wired to DAGs + one custom-span example.
-- [ ] **4.C — MinIO** Prometheus scrape + node/disk alert rules; document audit-log webhook.
-- [ ] **4.D — Spark** `PrometheusServlet` + `spark.eventLog.*` in `spark-defaults.conf`; History Server on `s3a://datalake-artifacts/spark-events`.
-- [ ] **4.E — Iceberg** maintenance DAG (`expire_snapshots` + `rewrite_data_files`, weekly) + per-run snapshot-summary deltas → `pipeline_quality_checks`.
-- [ ] **4.F — Postgres** Grafana board over `pipeline_season_control` + `pipeline_quality_checks` via `postgres_exporter`.
-- [ ] **4.G — Stack compose** authored + `docker compose config` validates.
-- [>] **4.LIVE — Bring stack up + verify dashboards/metrics** → **deferred** (needs Airflow + Spark running).
+- [x] **4.A — Airflow** OTel `[metrics]`/`[traces]` config in `airflow.env` (OFF by default, one flag to enable) + `pipeline_failure_notifier` (webhook/Slack) wired to all DAGs; custom-span pattern documented. _commit 07ffcf0/5fc4777._
+- [x] **4.C — MinIO** Prometheus scrape jobs + node/disk alert rules; `MINIO_PROMETHEUS_AUTH_TYPE=public`. _commit 07ffcf0._
+- [x] **4.D — Spark** `spark.ui.prometheus.enabled` + `appStatusSource` live; `eventLog` + History Server authored as a documented **opt-in** (avoids breaking the validated Spark runs). _commit 07ffcf0._
+- [x] **4.E — Iceberg** `iceberg_maintenance` DAG (@weekly) + script: `rewrite_data_files` + `expire_snapshots` + file/snapshot metrics. **Verified live** across all 6 tables. _(Per-run snapshot deltas → `pipeline_quality_checks` left as a minor follow-up.)_ _commit 5fc4777._
+- [x] **4.F — Postgres** provisioned Grafana dashboard over `pipeline_season_control` + `pipeline_quality_checks` + `postgres-exporter`. _commit 07ffcf0._
+- [x] **4.G — Stack compose** authored (`otel-collector + prometheus + grafana + postgres-exporter + spark-history`); all YAML/JSON + `docker compose config` validate. _commit 07ffcf0._
+- [>] **4.LIVE — Bring stack up + verify dashboards/metrics** → **deferred** (needs the stack running + Airflow `[otel]` extra).
 
 ---
 
 ## Wave 6 — Wrap-up
 
-- [ ] **W6.1** Final `pytest` green; finalize this tracker; leave commits on `de-hardening`; offer a PR.
+- [x] **W6.1** Final `pytest` green (78); tracker finalized; commits on `de-hardening`; PR offered.
 
 ---
 
