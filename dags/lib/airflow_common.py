@@ -41,6 +41,32 @@ def get_pg_conn():
     return conn
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def otel_span(name: str, **attributes):
+    """Best-effort OpenTelemetry span around a block of task logic.
+
+    No-ops gracefully if the OTel API isn't available or tracing is disabled, so
+    it never affects DAG parsing or task execution. Emits to the collector only
+    when ``AIRFLOW__TRACES__OTEL_ON=True``.
+    """
+    try:
+        from airflow.sdk.observability import trace
+
+        tracer = trace.get_tracer("football_pipeline")
+        with tracer.start_as_current_span(name) as span:
+            for key, value in attributes.items():
+                try:
+                    span.set_attribute(key, value)
+                except Exception:  # noqa: BLE001
+                    pass
+            yield span
+    except Exception:  # noqa: BLE001 - tracing must never break the task
+        yield None
+
+
 def pipeline_failure_notifier(context: dict) -> None:
     """DAG-level ``on_failure_callback``: log a structured alert and POST it to a
     webhook (Slack/Discord-compatible ``{"text": ...}``) if ``ALERT_WEBHOOK_URL``

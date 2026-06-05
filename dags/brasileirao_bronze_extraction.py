@@ -27,7 +27,7 @@ from airflow.exceptions import AirflowSkipException
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
-from lib.airflow_common import get_pg_conn, pipeline_failure_notifier
+from lib.airflow_common import get_pg_conn, otel_span, pipeline_failure_notifier
 from lib.extraction_helpers import (
     extract_events_to_minio,
     extract_lineup_to_minio,
@@ -153,11 +153,18 @@ def _create_bronze_dag(league_key: str):
         def extract_schedule(season_info: dict[str, Any]) -> dict[str, Any]:
             if not season_info or not season_info.get("season"):
                 return {}
-            result = extract_schedule_to_minio(
+            # Custom OTel span (no-op unless tracing is enabled) — example of
+            # instrumenting the slow ESPN extraction step.
+            with otel_span(
+                "espn.read_schedule",
                 league_key=league_key,
-                season=season_info["season"],
-                **_minio_kwargs(),
-            )
+                season=int(season_info["season"]),
+            ):
+                result = extract_schedule_to_minio(
+                    league_key=league_key,
+                    season=season_info["season"],
+                    **_minio_kwargs(),
+                )
             LOGGER.info(
                 "[%s] Schedule: season=%s rows=%s games=%s (%.2fs)",
                 dag_id, season_info["season"],
