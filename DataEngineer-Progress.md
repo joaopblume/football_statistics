@@ -14,12 +14,12 @@
 | 1 | 🔴 Critical | 2 | 2 ✅ |
 | 2 | 🟠 High | 3 | 3 ✅ |
 | 3 | 🟡 Medium | 4 | 4 ✅ (M1 superseded, M5 deferred) |
-| 4 | 🟢 Low / hygiene | 0 | 10 |
+| 4 | 🟢 Low / hygiene | 10 | 10 ✅ |
 | 5 | 📈 Observability (§4 / C3) | 0 | 6 |
 | 6 | Wrap-up | 0 | 1 |
 | — | Deferred (tracked) | — | 6 |
 
-_Last updated: Wave 3 (Medium) complete — M2, M3, M4, M6 done (M1 superseded, M5 deferred), each verified live. 78 unit tests passing._
+_Last updated: Wave 4 (Low/hygiene) complete — L1–L9 + §6a done. Full Bronze→Silver→Gold re-verified live for ITA + BRA before this wave; Silver re-verified after the L5 refactor. 78 unit tests passing; ruff clean; CI added._
 
 ## Live verification findings (running the actual pipelines)
 
@@ -97,16 +97,16 @@ Running the real Airflow DAGs end-to-end (per user request) surfaced bugs that u
 
 ## Wave 4 — 🟢 Low / hygiene
 
-- [ ] **L1** Delete dead `database/` + `extraction/` directories.
-- [ ] **L2** De-dup `drop_silver_gold_tables.py` (keep the mounted `notebooks/` copy, track it).
-- [ ] **L3** Fix stale top `README.md` (remove `brasileirao_lakehouse_pipeline.py`; add multi-league factory, season-control state machine, full notebook list, queue-path removal, observability pointer).
-- [ ] **L5** Factor shared boilerplate (`_get_conn`, `DEFAULT_ARGS`, `_on_notebook_failure`, `_write_partitioned`) + unify the near-identical silver/gold DAGs (**§6**).
+- [x] **L1** Deleted dead `database/` + `extraction/` directories. _commit d39db74._
+- [x] **L2** De-duped `drop_silver_gold_tables.py` (kept + tracked the mounted `notebooks/` copy). _commit d39db74._
+- [x] **L3** Refreshed stale top `README.md` (removed deleted-file refs; added multi-league factory, control plane, migrations/pool setup, secrets-via-env, updated roadmap). _commit 7812ebf._
+- [x] **L5** Factored shared boilerplate into `lib/airflow_common.py` (`get_pg_conn`, Spark container/pool/readiness, `notebook_failure_callback`); 4 DAGs use it. Verified live (Silver ITA 2025). _commit d905a4c._ _(Full silver/gold factory unification left with the deferred spark-submit refactor.)_
 - [x] **L6** Remove duplicate notebook verify cell. — _done within C1_
-- [ ] **L7** Split `requirements.txt` → runtime + `requirements-dev.txt` (file reorg only, no reinstall).
-- [ ] **L8** Add CI (`.github/workflows/ci.yml`: ruff + pytest) + `.pre-commit-config.yaml`.
-- [ ] **L9** Add compose healthchecks (minio/spark) + `depends_on: condition: service_healthy`.
-- [ ] **§6a** Raise `AirflowSkipException` on no-op bronze runs (distinguish "nothing to do" from "did work").
-- [x] **L4** `minio-data/` gitignored. — _(folded into C2)_
+- [x] **L7** Split requirements → curated `requirements.txt` + `requirements-dev.txt` + `requirements.lock.txt`; **added missing `boto3`** runtime dep. _commit 028b374._
+- [x] **L8** Added `ruff.toml`, `.github/workflows/ci.yml` (ruff + pytest), `.pre-commit-config.yaml`. _commit 028b374._
+- [x] **L9** MinIO healthcheck (curl `/minio/health/live`); `mc` waits for `service_healthy`. _commit d39db74._
+- [x] **§6a** `AirflowSkipException` on no-op runs (bronze/silver/gold). _commit d39db74._
+- [x] **L4** `minio-data/` gitignored + untracked. — _(C2 / commit 565c40b)_
 
 ---
 
