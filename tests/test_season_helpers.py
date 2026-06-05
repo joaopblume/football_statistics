@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dags"))
 from lib.season_helpers import (
     _STAGE_META,
     _STAGE_PREREQUISITE,
+    claim_next_season,
     get_pending_season,
     mark_stage_completed,
     mark_stage_failed,
@@ -43,6 +44,53 @@ def _make_get_conn(fetchone_return=None):
     """Return a get_conn_fn callable and the underlying (conn, cursor) pair."""
     conn, cursor = _make_conn(fetchone_return)
     return lambda: conn, conn, cursor
+
+
+# ---------------------------------------------------------------------------
+# claim_next_season  (atomic SELECT FOR UPDATE SKIP LOCKED + mark running)
+# ---------------------------------------------------------------------------
+
+class TestClaimNextSeason:
+
+    def test_returns_none_when_nothing_eligible(self):
+        get_conn_fn, conn, cursor = _make_get_conn(fetchone_return=None)
+        result = claim_next_season(get_conn_fn, "BRA-Brasileirao", stage="bronze")
+        assert result is None
+        conn.commit.assert_called_once()   # empty txn released
+        conn.close.assert_called_once()
+
+    def test_select_uses_for_update_skip_locked(self):
+        get_conn_fn, conn, cursor = _make_get_conn(fetchone_return=None)
+        claim_next_season(get_conn_fn, "BRA-Brasileirao", stage="bronze")
+        select_sql = cursor.execute.call_args_list[0][0][0]
+        assert "FOR UPDATE SKIP LOCKED" in select_sql
+
+    def test_claims_and_marks_running(self):
+        get_conn_fn, conn, cursor = _make_get_conn(
+            fetchone_return=(7, "ITA-Serie A", 2026, "bronze_done")
+        )
+        result = claim_next_season(get_conn_fn, None, stage="silver")
+        # returns the pre-claim row
+        assert result == {"id": 7, "league_key": "ITA-Serie A", "season": 2026, "status": "bronze_done"}
+        # second execute is the UPDATE to the running status for the claimed id
+        update_args = cursor.execute.call_args_list[1][0]
+        update_sql, update_params = update_args[0], update_args[1]
+        assert "UPDATE pipeline_season_control" in update_sql
+        assert update_params[0] == _STAGE_META["silver"][0]   # silver_running
+        assert update_params[1] == 7                          # the claimed id
+        conn.commit.assert_called_once()
+        conn.close.assert_called_once()
+
+    def test_no_update_when_nothing_claimed(self):
+        get_conn_fn, conn, cursor = _make_get_conn(fetchone_return=None)
+        claim_next_season(get_conn_fn, None, stage="gold")
+        # only the SELECT ran — no UPDATE
+        assert cursor.execute.call_count == 1
+
+    def test_unknown_stage_raises(self):
+        get_conn_fn, _, _ = _make_get_conn(fetchone_return=None)
+        with pytest.raises(ValueError, match="Unknown stage"):
+            claim_next_season(get_conn_fn, "BRA-Brasileirao", stage="platinum")
 
 
 # ---------------------------------------------------------------------------

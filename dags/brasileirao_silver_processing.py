@@ -33,10 +33,9 @@ from lib.league_config import get_league_slug
 from lib.minio_config import get_minio_settings, make_s3_client
 from lib.quality_helpers import record_quality_check, record_quality_report
 from lib.season_helpers import (
-    get_pending_season,
+    claim_next_season,
     mark_stage_completed,
     mark_stage_failed,
-    mark_stage_started,
 )
 
 # ---------------------------------------------------------------------------
@@ -141,14 +140,13 @@ def silver_processing():
         Picks the highest season number across ALL leagues (newest first).
         Returns {season_id, season, league_key}, or {} if nothing is ready.
         """
-        # Table is provisioned by migration 001 (no runtime DDL).
-        # league_key=None → search across all leagues
-        season_row = get_pending_season(_get_conn, None, stage="silver")
+        # Atomically claim the next bronze_done season across ALL leagues
+        # (FOR UPDATE SKIP LOCKED). Table is provisioned by migration 001.
+        season_row = claim_next_season(_get_conn, None, stage="silver")
         if season_row is None:
             LOGGER.info("No bronze_done season found across any league. Skipping.")
             return {}
 
-        mark_stage_started(_get_conn, season_row["id"], stage="silver")
         LOGGER.info(
             "Silver starting: league=%s season=%s (id=%s)",
             season_row["league_key"], season_row["season"], season_row["id"],

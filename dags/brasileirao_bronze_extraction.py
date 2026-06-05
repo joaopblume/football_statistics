@@ -37,10 +37,9 @@ from lib.extraction_helpers import (
 from lib.league_config import LEAGUE_CONFIGS
 from lib.minio_config import get_minio_settings
 from lib.season_helpers import (
-    get_pending_season,
+    claim_next_season,
     mark_stage_completed,
     mark_stage_failed,
-    mark_stage_started,
 )
 
 # ---------------------------------------------------------------------------
@@ -133,14 +132,14 @@ def _create_bronze_dag(league_key: str):
         # ------------------------------------------------------------------
         @task(task_id="get_season_and_mark_started")
         def get_season_and_mark_started() -> dict[str, Any]:
+            # Atomically claim the next pending season (FOR UPDATE SKIP LOCKED).
             # Table is provisioned by migration 001 (no runtime DDL).
-            season_row = get_pending_season(_get_conn, league_key, stage="bronze")
+            season_row = claim_next_season(_get_conn, league_key, stage="bronze")
             if season_row is None:
                 LOGGER.info(
                     "[%s] No pending season for stage=bronze. Nothing to do.", dag_id
                 )
                 return {}
-            mark_stage_started(_get_conn, season_row["id"], stage="bronze")
             LOGGER.info(
                 "[%s] Bronze starting for season=%s (id=%s)",
                 dag_id, season_row["season"], season_row["id"],

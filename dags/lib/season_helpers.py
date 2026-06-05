@@ -185,6 +185,92 @@ def get_pending_season(
 
 
 # ---------------------------------------------------------------------------
+# Atomic claim (concurrency-safe)
+# ---------------------------------------------------------------------------
+
+def claim_next_season(
+    get_conn_fn,
+    league_key: str | None,
+    stage: str,
+) -> dict[str, Any] | None:
+    """Atomically select the next eligible season for *stage* and mark it running.
+
+    Combines the read (``get_pending_season``) and the write (``mark_stage_started``)
+    into a SINGLE transaction using ``SELECT ... FOR UPDATE SKIP LOCKED``, so two
+    concurrent DAG runs can never claim the same row (the second skips the locked
+    row and either picks the next eligible season or gets ``None``).
+
+    Eligibility matches ``get_pending_season``: the row's status equals the
+    stage prerequisite, OR it previously failed at this stage.
+
+    Returns ``{id, league_key, season, status}`` (status is the *pre-claim*
+    status) after transitioning the row to the stage's running status and
+    clearing any prior error, or ``None`` if nothing is eligible.
+    """
+    if stage not in _STAGE_META:
+        raise ValueError(f"Unknown stage: {stage!r}. Must be one of {list(_STAGE_META)}")
+
+    prerequisite_status = _STAGE_PREREQUISITE[stage]
+    running_status, _, started_col, _ = _STAGE_META[stage]
+
+    league_clause = "AND league_key = %s" if league_key is not None else ""
+    params: list = []
+    if league_key is not None:
+        params.append(league_key)
+    params.extend([prerequisite_status, stage])
+
+    conn = get_conn_fn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, league_key, season, status
+                FROM pipeline_season_control
+                WHERE 1=1
+                  {league_clause}
+                  AND (
+                      status = %s
+                      OR (status = 'failed' AND last_error_stage = %s)
+                  )
+                ORDER BY season DESC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            if row is None:
+                conn.commit()  # release the (empty) transaction
+                LOGGER.info(
+                    "claim_next_season: no eligible season for stage=%s league=%s",
+                    stage, league_key or "ANY",
+                )
+                return None
+
+            season_id = row[0]
+            cur.execute(
+                f"""
+                UPDATE pipeline_season_control
+                SET status           = %s,
+                    {started_col}    = NOW(),
+                    last_error       = NULL,
+                    last_error_stage = NULL
+                WHERE id = %s
+                """,
+                (running_status, season_id),
+            )
+        conn.commit()
+        result = {"id": row[0], "league_key": row[1], "season": row[2], "status": row[3]}
+        LOGGER.info(
+            "claim_next_season: claimed season=%s league=%s (id=%s) for stage=%s → %s",
+            result["season"], result["league_key"], result["id"], stage, running_status,
+        )
+        return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
 
