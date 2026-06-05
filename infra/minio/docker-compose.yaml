@@ -26,6 +26,13 @@ services:
       - datalake-network
     # Ensure the container automatically restarts on failure or system reboot
     restart: unless-stopped
+    # Liveness probe so dependents can wait for MinIO to be ready
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
     # Cap memory: MinIO is lightweight for this workload (small JSON files)
     deploy:
       resources:
@@ -41,8 +48,9 @@ services:
     # Assign a predictable container name
     container_name: minio-mc
     depends_on:
-      # Ensure the MinIO container starts before this initialization script runs
-      - minio
+      # Wait until MinIO is healthy before initializing buckets
+      minio:
+        condition: service_healthy
     # Execute a shell script to robustly initialize the connection and create buckets
     entrypoint: |
       /bin/sh -c '

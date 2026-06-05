@@ -24,6 +24,7 @@ from typing import Any
 
 import pendulum
 from airflow.datasets import Dataset
+from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
@@ -139,7 +140,7 @@ def _create_bronze_dag(league_key: str):
                 LOGGER.info(
                     "[%s] No pending season for stage=bronze. Nothing to do.", dag_id
                 )
-                return {}
+                raise AirflowSkipException("No pending season for bronze")
             LOGGER.info(
                 "[%s] Bronze starting for season=%s (id=%s)",
                 dag_id, season_row["season"], season_row["id"],

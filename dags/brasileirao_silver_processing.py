@@ -24,6 +24,7 @@ from typing import Any
 
 import pendulum
 from airflow.datasets import Dataset
+from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import dag, task
@@ -145,7 +146,7 @@ def silver_processing():
         season_row = claim_next_season(_get_conn, None, stage="silver")
         if season_row is None:
             LOGGER.info("No bronze_done season found across any league. Skipping.")
-            return {}
+            raise AirflowSkipException("No bronze_done season to process")
 
         LOGGER.info(
             "Silver starting: league=%s season=%s (id=%s)",
