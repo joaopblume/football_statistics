@@ -1,18 +1,19 @@
 """Unit tests for dags/lib/extraction_helpers.py."""
 
 import json
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 # We need to add dags/ to path so we can import lib.*
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add the dags directory to the Python path for direct imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dags"))
 
 import io
+
 import pandas as pd
 
 from lib.extraction_helpers import (
@@ -21,7 +22,6 @@ from lib.extraction_helpers import (
     _parse_clock_minute,
     parse_lineup_with_ids,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test: parse_lineup_with_ids()

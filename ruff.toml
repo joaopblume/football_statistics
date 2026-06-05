@@ -1,0 +1,12 @@
+# Ruff configuration (lint + import sorting) used locally, in pre-commit, and CI.
+line-length = 100
+target-version = "py312"
+
+[lint]
+# F = pyflakes (unused imports/vars, real bugs), I = import sorting.
+# Kept focused so CI stays signal-rich rather than style-noisy.
+select = ["F", "I"]
+
+[lint.isort]
+# Treat the DAG-local package as first-party so it sorts into its own group.
+known-first-party = ["lib"]

@@ -5,7 +5,7 @@ All tests use mock connections — no real PostgreSQL required.
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,7 +18,6 @@ from lib.quality_helpers import (
     record_quality_report,
     record_stage_quality_passed,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mock connection helpers (same pattern as test_season_helpers.py)

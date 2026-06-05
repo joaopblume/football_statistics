@@ -1,0 +1,16 @@
+# Run `pre-commit install` once; hooks then run on every commit.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.4
+    hooks:
+      - id: ruff            # lint (F, I) with autofix; config in ruff.toml
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files   # guard against committing data dumps
+        args: [--maxkb=1024]

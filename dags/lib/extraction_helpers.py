@@ -394,6 +394,7 @@ def extract_schedule_to_minio(
         ``{schedule_rows, game_count, bronze_base, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
@@ -463,6 +464,7 @@ def extract_matchsheet_to_minio(
         ``{matchsheet_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
@@ -505,6 +507,7 @@ def extract_lineup_to_minio(
         ``{lineup_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()
@@ -557,6 +560,7 @@ def extract_events_to_minio(
         ``{events_rows, elapsed_seconds}``
     """
     import soccerdata as sd
+
     from lib.league_config import ensure_league_mapping, get_league_slug
 
     t0 = time.perf_counter()

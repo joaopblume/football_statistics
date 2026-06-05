@@ -6,7 +6,7 @@ The mock simulates psycopg2's cursor/connection interface.
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dags"))
 
 from lib.season_helpers import (
     _STAGE_META,
-    _STAGE_PREREQUISITE,
     claim_next_season,
     get_pending_season,
     mark_stage_completed,
@@ -23,7 +22,6 @@ from lib.season_helpers import (
     mark_stage_started,
     requeue_latest_complete_seasons,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers to build mock psycopg2 connections
