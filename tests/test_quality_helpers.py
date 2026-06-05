@@ -15,6 +15,7 @@ from lib.quality_helpers import (
     _STAGE_CHECKS,
     get_quality_summary,
     record_quality_check,
+    record_quality_report,
     record_stage_quality_passed,
 )
 
@@ -149,6 +150,61 @@ class TestRecordQualityCheck:
         record_quality_check(get_conn_fn, 1, "silver", "check", "pass")
         conn.commit.assert_called_once()
         conn.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# record_quality_report  (measured checks from the Spark notebook)
+# ---------------------------------------------------------------------------
+
+class TestRecordQualityReport:
+
+    def _checks(self):
+        return [
+            {"check_name": "teams_not_empty", "status": "pass", "details": "row_count=20"},
+            {"check_name": "player_name_null_rate_ok", "status": "warn",
+             "details": "player_null_rate=0.0300"},
+        ]
+
+    def test_inserts_one_row_per_check(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        n = record_quality_report(get_conn_fn, season_id=1, stage="silver", checks=self._checks())
+        assert n == 2
+        assert cursor.execute.call_count == 2
+
+    def test_records_measured_status_and_details(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        record_quality_report(get_conn_fn, 1, "silver", self._checks())
+
+        # second insert carries the measured 'warn' + details (not a blind 'pass')
+        params = cursor.execute.call_args_list[1][0][1]
+        assert params[2] == "player_name_null_rate_ok"
+        assert params[3] == "warn"
+        assert params[4] == "player_null_rate=0.0300"
+
+    def test_commits_and_closes(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        record_quality_report(get_conn_fn, 1, "silver", self._checks())
+        conn.commit.assert_called_once()
+        conn.close.assert_called_once()
+
+    def test_empty_checks_raises(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        with pytest.raises(ValueError, match="non-empty"):
+            record_quality_report(get_conn_fn, 1, "silver", checks=[])
+        cursor.execute.assert_not_called()
+
+    def test_invalid_status_raises_before_any_write(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        bad = [{"check_name": "x", "status": "ok"}]  # 'ok' is not valid
+        with pytest.raises(ValueError, match="invalid status"):
+            record_quality_report(get_conn_fn, 1, "silver", bad)
+        # validation happens up front → no partial batch written
+        cursor.execute.assert_not_called()
+
+    def test_missing_check_name_raises(self):
+        get_conn_fn, conn, cursor = _make_get_conn()
+        with pytest.raises(ValueError, match="missing check_name"):
+            record_quality_report(get_conn_fn, 1, "silver", [{"status": "pass"}])
 
 
 # ---------------------------------------------------------------------------

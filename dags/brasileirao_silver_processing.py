@@ -16,6 +16,7 @@ Status transitions: bronze_done → silver_running → silver_done (or failed).
 Produces dataset: iceberg://lake/analytics/silver
 """
 
+import json
 import logging
 import os
 from datetime import timedelta
@@ -28,7 +29,9 @@ from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import dag, task
 from airflow.task.trigger_rule import TriggerRule
 
-from lib.quality_helpers import record_stage_quality_passed
+from lib.league_config import get_league_slug
+from lib.minio_config import get_minio_settings, make_s3_client
+from lib.quality_helpers import record_quality_check, record_quality_report
 from lib.season_helpers import (
     ensure_season_control_table,
     get_pending_season,
@@ -46,6 +49,9 @@ POSTGRES_CONN_ID = os.getenv("PG_CONN_ID", "db-pg-futebol-dados")
 
 SPARK_CONTAINER = "jupyter-spark"
 NOTEBOOK_PATH = "/home/jovyan/work/spark_silver_processing.ipynb"
+
+# Bucket where the Silver notebook writes its quality report JSON
+WAREHOUSE_BUCKET = os.getenv("MINIO_WAREHOUSE_BUCKET", "datalake-warehouse")
 
 # Shared Dataset — triggered by any Bronze DAG (any league)
 bronze_dataset = Dataset("minio://datalake-raw/espn/bronze")
@@ -188,12 +194,40 @@ def silver_processing():
     # ------------------------------------------------------------------
     @task(task_id="record_silver_quality", trigger_rule=TriggerRule.ALL_SUCCESS)
     def record_silver_quality(season_info: dict[str, Any]) -> None:
+        """Persist the MEASURED Silver quality checks the notebook computed.
+
+        The notebook evaluates each check, writes a report to MinIO, and
+        aborts on any hard failure — so reaching this task means nothing
+        failed. We read that report and record each measured (status, details)
+        instead of a blind 'pass'.
+        """
         if not season_info or not season_info.get("season_id"):
             return
-        record_stage_quality_passed(_get_conn, season_info["season_id"], stage="silver")
+
+        league_key = season_info["league_key"]
+        season = season_info["season"]
+        key = f"quality/silver/{get_league_slug(league_key)}/{season}/report.json"
+
+        try:
+            s3 = make_s3_client(get_minio_settings())
+            obj = s3.get_object(Bucket=WAREHOUSE_BUCKET, Key=key)
+            checks = json.loads(obj["Body"].read()).get("checks", [])
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Silver quality report missing/unreadable at s3://%s/%s (%s) — "
+                "recording a single 'warn' so the gap stays visible.",
+                WAREHOUSE_BUCKET, key, exc,
+            )
+            record_quality_check(
+                _get_conn, season_info["season_id"], "silver",
+                "quality_report_available", "warn", details=f"missing: {key}",
+            )
+            return
+
+        n = record_quality_report(_get_conn, season_info["season_id"], "silver", checks)
         LOGGER.info(
-            "Silver quality recorded: league=%s season=%s",
-            season_info.get("league_key"), season_info.get("season"),
+            "Silver quality recorded: league=%s season=%s checks=%d",
+            league_key, season, n,
         )
 
     # ------------------------------------------------------------------

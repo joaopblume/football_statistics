@@ -32,13 +32,12 @@ _Last updated: Wave 0 complete._
 
 ## Wave 1 — 🔴 Critical
 
-- [ ] **C1 — Silver quality gates are theater → make them real**
-  - [ ] Compute the 10 declared checks in `spark_silver_processing.ipynb` (empty-table; null-rate for team/player/game keys; `home_score_not_all_null`; `athlete_id` coverage) and `raise` on failure before the write cell.
-  - [ ] Record **measured** results via `record_quality_check(..., status, details="…")` (silver DAG) instead of blanket `record_stage_quality_passed`.
-  - [ ] Retire/trim `record_stage_quality_passed` if now unused.
-  - [ ] Add unit tests for the new check logic (mock-conn pattern).
-  - [ ] Delete the duplicate verify cell (**L6**) while in the notebook.
-  - _Resolution:_ _(pending)_ · _commit:_ —
+- [x] **C1 — Silver quality gates are theater → make them real**
+  - [x] Compute the 10 declared checks + `athlete_id_coverage` in `spark_silver_processing.ipynb` and `raise` on hard failure **before** the write cell; write a measured `report.json` to MinIO.
+  - [x] Record **measured** results via new `record_quality_report(...)` (silver DAG reads the report) instead of blanket `record_stage_quality_passed`; fall back to a `warn` row if the report is missing.
+  - [x] Add unit tests for `record_quality_report` (6 new tests, mock-conn pattern).
+  - [x] Delete the duplicate verify cell (**L6**).
+  - _Resolution:_ measured gates in notebook + `report.json` handoff to MinIO + `record_quality_report` helper. `record_stage_quality_passed` kept (still used by Gold for now). 80 tests pass. · _commit: (next)_
 - [ ] **C2 — Secrets out of code**
   - [ ] Remove `minioadmin/minioadmin123` defaults from `dags/brasileirao_bronze_extraction.py` (fail-fast if absent).
   - [ ] Parameterize creds in `infra/minio/docker-compose.yaml`, `infra/spark/docker-compose.yaml`, `infra/spark/conf/spark-defaults.conf` (env-driven, marked local-dev defaults).
@@ -88,7 +87,7 @@ _Last updated: Wave 0 complete._
 - [ ] **L2** De-dup `drop_silver_gold_tables.py` (keep the mounted `notebooks/` copy, track it).
 - [ ] **L3** Fix stale top `README.md` (remove `brasileirao_lakehouse_pipeline.py`; add multi-league factory, season-control state machine, full notebook list, queue-path removal, observability pointer).
 - [ ] **L5** Factor shared boilerplate (`_get_conn`, `DEFAULT_ARGS`, `_on_notebook_failure`, `_write_partitioned`) + unify the near-identical silver/gold DAGs (**§6**).
-- [ ] **L6** Remove duplicate notebook verify cell. — _(done within C1)_
+- [x] **L6** Remove duplicate notebook verify cell. — _done within C1_
 - [ ] **L7** Split `requirements.txt` → runtime + `requirements-dev.txt` (file reorg only, no reinstall).
 - [ ] **L8** Add CI (`.github/workflows/ci.yml`: ruff + pytest) + `.pre-commit-config.yaml`.
 - [ ] **L9** Add compose healthchecks (minio/spark) + `depends_on: condition: service_healthy`.

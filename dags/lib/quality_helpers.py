@@ -142,6 +142,77 @@ def record_quality_check(
         conn.close()
 
 
+def record_quality_report(
+    get_conn_fn,
+    season_id: int,
+    stage: str,
+    checks: list[dict[str, Any]],
+) -> int:
+    """Record a batch of *evaluated* quality checks for a stage.
+
+    Unlike ``record_stage_quality_passed`` (which blindly writes 'pass' for a
+    fixed catalogue), this records the **measured** result of each check that
+    the Spark notebook actually computed.  Each entry in *checks* must be a
+    dict with keys ``check_name``, ``status`` ('pass'|'warn'|'fail') and an
+    optional ``details`` string (e.g. ``"null_rate=0.03, threshold=0.05"``).
+
+    The notebook is expected to ``raise`` on any hard failure *before* writing
+    its tables, so in practice only 'pass'/'warn' rows reach this function on a
+    successful run — but 'fail' is accepted and validated for completeness.
+
+    Returns the number of rows written.
+
+    Raises
+    ------
+    ValueError
+        If *checks* is empty, an entry is missing ``check_name``, or a
+        ``status`` is not one of 'pass'/'warn'/'fail'.
+    """
+    if not checks:
+        raise ValueError("record_quality_report: 'checks' must be non-empty")
+
+    valid_status = {"pass", "warn", "fail"}
+    # Validate everything up front so we never write a partial batch.
+    for entry in checks:
+        name = entry.get("check_name")
+        status = entry.get("status")
+        if not name:
+            raise ValueError(f"record_quality_report: entry missing check_name: {entry!r}")
+        if status not in valid_status:
+            raise ValueError(
+                f"record_quality_report: invalid status {status!r} for {name!r}"
+            )
+
+    conn = get_conn_fn()
+    try:
+        with conn.cursor() as cur:
+            for entry in checks:
+                cur.execute(
+                    """
+                    INSERT INTO pipeline_quality_checks
+                        (season_id, stage, check_name, status, details)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        season_id,
+                        stage,
+                        entry["check_name"],
+                        entry["status"],
+                        entry.get("details"),
+                    ),
+                )
+        conn.commit()
+        n_fail = sum(1 for e in checks if e["status"] == "fail")
+        n_warn = sum(1 for e in checks if e["status"] == "warn")
+        LOGGER.info(
+            "Recorded %d quality checks (warn=%d fail=%d) for season_id=%s stage=%s",
+            len(checks), n_warn, n_fail, season_id, stage,
+        )
+        return len(checks)
+    finally:
+        conn.close()
+
+
 def get_quality_summary(
     get_conn_fn,
     season_id: int,
