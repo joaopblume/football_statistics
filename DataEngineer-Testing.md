@@ -197,4 +197,44 @@ SELECT * FROM lake.analytics.match_statistics.files;       -- file/size health
 
 ---
 
+## 6. Live pipeline verification (Airflow end-to-end)
+
+Running the **actual DAGs** end-to-end (not just unit tests) surfaced 3 real bugs that isolated tests missed. All fixed + re-verified. How to reproduce:
+
+```bash
+source /root/airflow/venv/bin/activate; export AIRFLOW_HOME=/root/airflow
+export MINIO_ACCESS_KEY=minioadmin MINIO_SECRET_KEY=minioadmin123 MINIO_ENDPOINT=http://localhost:9000
+
+# Bronze (extracts a season from ESPN -> MinIO). Pick a pending season first.
+psql -d futebol-dados -c "UPDATE pipeline_season_control SET status='pending' WHERE league_key='BRA-Brasileirao' AND season=2024;"
+airflow dags test bronze_extraction__BRA_Brasileirao      # -> bronze_done
+
+# Silver (needs a bronze_done season; picks the newest across leagues)
+airflow dags test silver_processing                       # -> silver_done + quality rows
+psql -d futebol-dados -c "SELECT stage,check_name,status,details FROM pipeline_quality_checks WHERE stage='silver' ORDER BY checked_at DESC LIMIT 11;"
+
+# Gold (needs a silver_done season)
+airflow dags test gold_processing                         # -> complete
+```
+`airflow dags test <dag_id>` runs the whole DAG synchronously and prints `DagRun Finished ... state=success`. NOTE: run Silver and Gold in **separate** invocations — each `start_spark` gives Spark a fresh container; running two heavy notebooks in one container session OOMs (exit 137), which is a test artifact, not a pipeline bug.
+
+### Bugs found by live runs (all fixed)
+| # | Bug | Symptom | Fix | Commit |
+|---|---|---|---|---|
+| ENV | Airflow process env lacked `MINIO_*` (after C2) | tasks would fail-fast | `cp infra/airflow/airflow.env /etc/default/airflow` + restart | ops |
+| V1 | `docker exec -e LEAGUE_KEY=$LEAGUE_KEY` unquoted | `No such container: League` for spaced league keys | quote `SEASON`/`LEAGUE_KEY` | a7b5e16 |
+| V2 | Iceberg shared table, per-league column drift | `INSERT_COLUMN_ARITY_MISMATCH` | `_align_df_to_table()` schema reconciliation | a7b5e16 |
+| V3 | soccerdata cross-year season (`2627` vs `2026`) | Gold `season==SEASON` filter → 0 rows | normalize `season` to `SEASON` in Silver | 9c40c4c |
+
+### Proven green (live)
+- Bronze `BRA 2024` → `bronze_done` (exit 0).
+- Silver `ITA-Serie A 2026` (spaced key, into tables already holding BRA+ENG partitions) → `state=success`, 11 measured quality rows in Postgres.
+- Gold `ITA-Serie A 2026` → `player_season_stats` 766 rows (fresh container).
+- Cross-league `drop → BRA → ENG → BRA` writes → all exit 0 (schema evolution both directions).
+- Dataset chain: Silver emitting its dataset auto-triggered the Gold DAG.
+
+> The dev lake currently holds only the partitions exercised during testing. To repopulate fully, reset the desired seasons to `pending` and let the pipeline run.
+
+---
+
 _This file is updated at the end of each wave with the new verification steps._

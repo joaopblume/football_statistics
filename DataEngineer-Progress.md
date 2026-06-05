@@ -19,7 +19,19 @@
 | 6 | Wrap-up | 0 | 1 |
 | — | Deferred (tracked) | — | 6 |
 
-_Last updated: Wave 2 (High) complete — H1, H2, H3 done. Surface area now Bronze→Silver→Gold only; 70 tests passing (10 dead tests removed in H2)._
+_Last updated: Wave 2 + live pipeline verification complete. 3 additional real bugs found by running the DAGs end-to-end and fixed (V1–V3). 70 unit tests passing._
+
+## Live verification findings (running the actual pipelines)
+
+Running the real Airflow DAGs end-to-end (per user request) surfaced bugs that unit tests + the notebook-in-isolation could not. All fixed and re-verified live.
+
+- [x] **ENV — Airflow MinIO env gap** (consequence of C2). Live `/etc/default/airflow` lacked `MINIO_*`; applied `infra/airflow/airflow.env` + restarted services so scheduler/tasks have the creds. _commit: n/a (ops)._
+- [x] **V1 — `docker exec` env unquoted** → league keys with spaces (`ENG-Premier League`, `ITA-Serie A`, `FRA-Ligue 1`) word-split; docker read `League` as the container name. This is why those leagues' 2026 seasons were stuck `failed/silver`. Quoted `SEASON`/`LEAGUE_KEY` in Silver+Gold. _commit: a7b5e16._
+- [x] **V2 — Iceberg cross-league schema drift** → different ESPN leagues expose different stat columns; 2nd league into a shared table failed `INSERT_COLUMN_ARITY_MISMATCH`. Added `_align_df_to_table()` (ALTER ADD new cols, typed-NULL fill missing, project in table order) in both notebooks. _commit: a7b5e16._
+- [x] **V3 — cross-year European season encoding** → soccerdata tags ENG/ITA/FRA seasons as e.g. `2627` for a `2026` request; Gold's `season==SEASON` filter then returned 0 rows. Normalize `season` to the pipeline `SEASON` in Silver. _commit: 9c40c4c._
+- [x] **Notebook structure repair** — my iterative cell edits had duplicated the Silver write cell and dropped the quality-gate cell; restored from the C1 commit and re-applied the align fix cleanly.
+
+**Verified live:** Silver DAG end-to-end for `ITA-Serie A 2026` (spaced key, into tables already holding BRA+ENG partitions) → `state=success`, 11 measured quality rows in Postgres. Gold for `ITA-Serie A 2026` → `player_season_stats` 766 rows. Cross-league `drop→BRA→ENG→BRA` all exit 0. Bronze → _(in progress)_.
 
 ---
 
