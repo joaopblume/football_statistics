@@ -15,6 +15,8 @@ help:
 	@echo "  make airflow-up    - Starts Airflow API server and scheduler via systemd"
 	@echo "  make airflow-setup-pools - Create the size-1 'spark_notebook' pool (one-time)"
 	@echo "  make airflow-down  - Stops Airflow services"
+	@echo "  make obs-up        - Start observability stack (Prometheus + Grafana + OTel)"
+	@echo "  make obs-down      - Stop the observability stack"
 	@echo "  make logs-airflow  - Follow Airflow systemd logs"
 
 # Target to start the infrastructure
@@ -82,3 +84,18 @@ airflow-down:
 logs-airflow:
 	@echo "Following logs for Airflow Scheduler, API Server, and DAG Processor..."
 	sudo journalctl -u airflow-scheduler -u airflow-api-server -u airflow-dag-processor -f
+
+# ==========================================================
+# Observability stack (OTel Collector + Prometheus + Grafana)
+# ==========================================================
+
+obs-up:
+	@echo "Starting observability stack (Grafana http://localhost:3000)..."
+	cd infra/observability && docker compose up -d
+	@echo "Prometheus: http://localhost:9090  |  Grafana: http://localhost:3000"
+
+obs-down:
+	cd infra/observability && docker compose down
+
+logs-obs:
+	cd infra/observability && docker compose logs -f

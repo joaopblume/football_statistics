@@ -19,6 +19,9 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       # Set a default region to prevent errors from strict AWS S3 client libraries
       MINIO_REGION_NAME: us-east-1
+      # Allow Prometheus to scrape /minio/v2/metrics/* without a bearer token
+      # (local dev). Remove/secure this in production.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     volumes:
       # Persist data locally so buckets and objects are not lost upon container restart
       - ./minio-data:/data

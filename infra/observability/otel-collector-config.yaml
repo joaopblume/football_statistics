@@ -1,0 +1,36 @@
+# OpenTelemetry Collector: receives OTLP from Airflow (metrics + traces),
+# exposes metrics for Prometheus to scrape, and logs traces (point the traces
+# pipeline at Tempo/Jaeger to visualize them).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  # Re-exposes received OTLP metrics in Prometheus format on :8889.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    send_timestamps: true
+  debug:
+    verbosity: basic
+  # To visualize traces, run Tempo/Jaeger and add an otlp exporter here, e.g.:
+  # otlp/tempo:
+  #   endpoint: tempo:4317
+  #   tls: { insecure: true }
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]   # swap/add [otlp/tempo] to ship traces to Tempo/Jaeger
