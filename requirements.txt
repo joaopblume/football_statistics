@@ -7,6 +7,7 @@ apache-airflow==3.1.7
 apache-airflow-providers-postgres==6.6.0
 apache-airflow-providers-standard==1.11.0
 apache-airflow-providers-smtp==2.4.2          # failure notifications
+apache-airflow-providers-openlineage==2.17.0  # data lineage events
 
 # --- Extraction + object storage ---
 soccerdata==1.8.8
